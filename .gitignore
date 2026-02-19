@@ -1,0 +1,38 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+*.egg
+dist/
+build/
+*.spec
+*.manifest
+
+# Certificados y claves (NUNCA subir)
+*.pfx
+*.p12
+*.pem
+*.key
+*.cer
+*.crt
+
+# PDFs de prueba y salida
+*_firmados/
+*.tmp
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+Thumbs.db
+.DS_Store
+desktop.ini
+
+# Entornos virtuales
+venv/
+.venv/
+env/
