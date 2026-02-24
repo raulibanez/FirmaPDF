@@ -4,17 +4,24 @@ Utilidad de escritorio para **separar un PDF multipágina en documentos individu
 
 Pensado para cualquier persona que necesite firmar documentos PDF de forma masiva con su certificado digital.
 
-![Python](https://img.shields.io/badge/Python-3.8%2B-blue)
+![Python](https://img.shields.io/badge/Python-3.9%2B-blue)
 ![Windows](https://img.shields.io/badge/Plataforma-Windows-0078D6)
 ![License](https://img.shields.io/badge/Licencia-MIT-green)
+![Version](https://img.shields.io/badge/Versión-1.1-orange)
+
+![Captura de FirmaPDF](screenshot.png)
 
 ---
 
 ## Funcionalidades
 
 - Separa un PDF de N páginas en N documentos individuales
-- Añade un sello visible configurable: nombre del firmante, cargo, organización y fecha/hora
-- Posición del sello: inferior o lateral izquierdo
+- Añade un **sello visible** configurable: nombre del firmante, cargo, organización y fecha/hora
+- Tres posiciones del sello:
+  - **Inferior** — franja en la parte baja de cada página
+  - **Lateral izquierdo** — franja vertical en el margen izquierdo
+  - **Zona personalizada** — selección visual sobre la página, estilo Adobe, con texto en mayúsculas y tamaño adaptable
+- **Nombre automático de archivos desde el PDF**: selecciona una zona del documento y el programa extrae el texto de esa misma posición en cada página para usarlo como nombre de archivo (útil para expedientes, DNIs, referencias, etc.)
 - Firma digital con certificado FNMT directamente desde el **almacén de Windows** (como hace Chrome), sin necesidad de exportar la clave privada
 - También soporta archivos **.pfx / .p12** exportados
 - Interfaz gráfica sencilla (no requiere conocimientos técnicos)
@@ -86,7 +93,7 @@ Si quieres generar tu propio `.exe` portable:
 
 ```
 pip install pyinstaller
-pyinstaller --onefile --windowed --name "FirmaPDF" FirmaPDF.py
+pyinstaller --onefile --windowed --noupx --name "FirmaPDF" FirmaPDF.py
 ```
 
 El ejecutable se generará en la carpeta `dist/FirmaPDF.exe`.
@@ -96,13 +103,16 @@ El ejecutable se generará en la carpeta `dist/FirmaPDF.exe`.
 ## Uso
 
 1. **Selecciona el PDF** multipágina que quieres separar y firmar
-2. **Elige el certificado**:
-   - **Almacén de Windows** (recomendado): pulsa "Seleccionar..." y elige tu certificado FNMT del diálogo nativo de Windows. No necesitas exportar nada.
+2. *(Opcional)* Marca **"Nombrar archivos con texto del PDF"** y selecciona una zona del documento para extraer automáticamente el nombre de cada archivo
+3. **Elige el certificado**:
+   - **Almacén de Windows** (recomendado): pulsa "Seleccionar..." y elige tu certificado FNMT del diálogo nativo de Windows
    - **Archivo .pfx / .p12**: selecciona el archivo e introduce la contraseña
-3. **Rellena los datos del sello**: nombre del firmante, cargo y organización
-4. **Elige la posición** del sello (inferior o lateral izquierdo)
-5. **Selecciona la carpeta de salida**
-6. Pulsa **"Firmar Documentos"**
+4. **Rellena los datos del sello**: nombre del firmante, cargo y organización
+5. **Elige la posición del sello**:
+   - **Inferior** o **Lateral izquierdo** para posiciones predefinidas
+   - **Zona personalizada** para dibujar sobre la página exactamente dónde colocar el sello (estilo Adobe)
+6. **Selecciona la carpeta de salida**
+7. Pulsa **"Firmar Documentos"**
 
 Cada página del PDF original se guardará como un documento independiente, con el sello visible y la firma digital incorporada.
 
@@ -115,6 +125,7 @@ Cada página del PDF original se guardará como un documento independiente, con 
 | [pypdf](https://pypi.org/project/pypdf/) | Separar y manipular páginas PDF |
 | [reportlab](https://pypi.org/project/reportlab/) | Generar el sello visual como overlay |
 | [pyhanko](https://pypi.org/project/pyHanko/) | Firma digital PAdES con certificado PKCS#12 |
+| [PyMuPDF](https://pypi.org/project/PyMuPDF/) | Previsualización del PDF y extracción de texto por zona |
 
 ---
 
