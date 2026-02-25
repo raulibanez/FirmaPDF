@@ -7,7 +7,7 @@ Pensado para cualquier persona que necesite firmar documentos PDF de forma masiv
 ![Python](https://img.shields.io/badge/Python-3.9%2B-blue)
 ![Windows](https://img.shields.io/badge/Plataforma-Windows-0078D6)
 ![License](https://img.shields.io/badge/Licencia-MIT-green)
-![Version](https://img.shields.io/badge/Versión-1.1-orange)
+![Version](https://img.shields.io/badge/Versión-1.2-orange)
 
 ![Captura de FirmaPDF](screenshot.png)
 
@@ -21,7 +21,11 @@ Pensado para cualquier persona que necesite firmar documentos PDF de forma masiv
   - **Inferior** — franja en la parte baja de cada página
   - **Lateral izquierdo** — franja vertical en el margen izquierdo
   - **Zona personalizada** — selección visual sobre la página, estilo Adobe, con texto en mayúsculas y tamaño adaptable
-- **Nombre automático de archivos desde el PDF**: selecciona una zona del documento y el programa extrae el texto de esa misma posición en cada página para usarlo como nombre de archivo (útil para expedientes, DNIs, referencias, etc.)
+- **Nombre automático de archivos desde el PDF**:
+  - **Seleccionar zona**: dibuja un rectángulo sobre la página y se extrae el texto de esa posición en cada página (útil para expedientes, DNIs, referencias, etc.)
+  - **Buscar en frase**: escribe una frase del tipo *"acreditamos que {NOMBRE} ha asistido al curso"* y el programa extrae automáticamente lo que haya en `{NOMBRE}` de cada página, sin necesidad de seleccionar zona
+  - Ambos métodos son combinables y muestran una **vista previa** en tiempo real del nombre resultante
+  - Plantilla de nombre de archivo configurable (ej: `Certificado_{nombre}.pdf`)
 - Firma digital con certificado FNMT directamente desde el **almacén de Windows** (como hace Chrome), sin necesidad de exportar la clave privada
 - También soporta archivos **.pfx / .p12** exportados
 - Interfaz gráfica sencilla (no requiere conocimientos técnicos)
@@ -103,7 +107,11 @@ El ejecutable se generará en la carpeta `dist/FirmaPDF.exe`.
 ## Uso
 
 1. **Selecciona el PDF** multipágina que quieres separar y firmar
-2. *(Opcional)* Marca **"Nombrar archivos con texto del PDF"** y selecciona una zona del documento para extraer automáticamente el nombre de cada archivo
+2. *(Opcional)* Marca **"Nombre de archivo desde el PDF"**:
+   - Pulsa **"Seleccionar zona…"** para dibujar un área de donde extraer texto, o
+   - Escribe una frase en **"Buscar en frase"** usando `{NOMBRE}` como comodín (ej: `acreditamos que {NOMBRE} ha asistido`)
+   - Personaliza el **nombre de archivo** con una plantilla (ej: `Certificado_{nombre}`)
+   - La vista previa te muestra al instante cómo quedará el nombre
 3. **Elige el certificado**:
    - **Almacén de Windows** (recomendado): pulsa "Seleccionar..." y elige tu certificado FNMT del diálogo nativo de Windows
    - **Archivo .pfx / .p12**: selecciona el archivo e introduce la contraseña

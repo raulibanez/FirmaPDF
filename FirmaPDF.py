@@ -10,6 +10,7 @@ Empaquetado: pyinstaller --onefile --windowed --noupx --name "FirmaPDF" FirmaPDF
 import os
 import sys
 import io
+import re
 import hashlib
 import threading
 import tkinter as tk
@@ -454,16 +455,58 @@ def _sanitizar_nombre(text):
     return text
 
 
-def _extraer_nombres_paginas(pdf_path, total_pages, text_rect):
-    """Extract text from a fixed region on each page for use as filename."""
-    if not HAS_FITZ or text_rect is None:
+def _normalizar_texto(texto):
+    """Collapse any whitespace (newlines, tabs, multiple spaces) into single spaces."""
+    return re.sub(r'\s+', ' ', texto).strip()
+
+
+def _aplicar_patron(texto, patron):
+    """Extract variable part from text using a pattern with {NOMBRE} placeholder."""
+    if not patron or '{' not in patron:
+        return texto
+    texto_limpio = _normalizar_texto(texto)
+    parts = re.split(r'\{[^}]+\}', patron)
+    regex_str = ''
+    for i, part in enumerate(parts):
+        if part:
+            words = part.split()
+            regex_str += r'\s+'.join(re.escape(w) for w in words)
+        if i < len(parts) - 1:
+            regex_str += r'\s*(.+?)\s*'
+    match = re.search(regex_str, texto_limpio, re.IGNORECASE)
+    if match:
+        return match.group(1).strip()
+    return texto_limpio
+
+
+def _aplicar_plantilla(plantilla, nombre_texto, nombre_original, pagina):
+    """Apply filename template replacing {nombre}, {original}, {pagina}."""
+    r = plantilla
+    for tag in ('{nombre}', '{NOMBRE}'):
+        r = r.replace(tag, nombre_texto or '')
+    for tag in ('{original}', '{ORIGINAL}'):
+        r = r.replace(tag, nombre_original)
+    for tag in ('{pagina}', '{PAGINA}'):
+        r = r.replace(tag, f'{pagina:04d}')
+    return _sanitizar_nombre(r)
+
+
+def _extraer_nombres_paginas(pdf_path, total_pages, text_rect=None,
+                             patron=None):
+    """Extract text from a region or full page for use as filename."""
+    if not HAS_FITZ:
         return None
-    x0, y0, x1, y1 = text_rect
-    rect = fitz.Rect(x0, y0, x1, y1)
+    if text_rect is None and not patron:
+        return None
+    rect = fitz.Rect(*text_rect) if text_rect else None
     doc = fitz.open(pdf_path)
     nombres = []
     for i in range(total_pages):
-        raw = doc[i].get_text("text", clip=rect).strip()
+        page = doc[i]
+        raw = (page.get_text("text", clip=rect).strip() if rect
+               else page.get_text("text").strip())
+        if patron:
+            raw = _aplicar_patron(raw, patron)
         clean = _sanitizar_nombre(raw)
         nombres.append(clean if clean else None)
     doc.close()
@@ -703,6 +746,7 @@ class StampZoneSelectorDialog:
 
 def separar_y_sellar(pdf_path, output_dir, firmante, cargo, centro,
                      posicion, text_rect=None, stamp_rect=None,
+                     text_patron=None, nombre_plantilla=None,
                      callback=None):
     reader = PdfReader(pdf_path)
     if reader.is_encrypted:
@@ -714,17 +758,27 @@ def separar_y_sellar(pdf_path, output_dir, firmante, cargo, centro,
     nombre = Path(pdf_path).stem
     lineas = _lineas_sello(firmante, cargo, centro)
 
-    nombres_pag = _extraer_nombres_paginas(pdf_path, total, text_rect)
+    nombres_pag = _extraer_nombres_paginas(
+        pdf_path, total, text_rect, text_patron)
+    has_names = text_rect or text_patron
+    plantilla = nombre_plantilla or (
+        '{nombre}' if has_names else '{original}_p{pagina}')
+
     nombres_finales = []
     used = set()
     for i in range(total):
-        n = nombres_pag[i] if nombres_pag else None
+        texto = nombres_pag[i] if nombres_pag else None
+        if texto:
+            n = _aplicar_plantilla(plantilla, texto, nombre, i + 1)
+        else:
+            n = _aplicar_plantilla(
+                '{original}_p{pagina}', None, nombre, i + 1)
         if not n:
             n = f"{nombre}_p{i + 1:04d}"
-        original = n
+        original_n = n
         suffix = 2
         while n in used:
-            n = f"{original} ({suffix})"
+            n = f"{original_n} ({suffix})"
             suffix += 1
         used.add(n)
         nombres_finales.append(n)
@@ -789,7 +843,7 @@ class FirmadorApp:
     def __init__(self, root):
         self.root = root
         self.root.title("Firmador de PDFs \u2013 Certificado FNMT")
-        self.root.geometry("680x720")
+        self.root.geometry("680x750")
         self.root.resizable(False, False)
         self._center()
 
@@ -810,8 +864,13 @@ class FirmadorApp:
         self._win_cert_label_var = tk.StringVar(value="(ninguno seleccionado)")
 
         self._text_rect = None
+        self._zone_raw_text = ""
+        self._page_full_text = None
         self._use_text_name = tk.BooleanVar(value=False)
         self._zone_text_var = tk.StringVar(value="")
+        self._patron_var = tk.StringVar(value="")
+        self._plantilla_var = tk.StringVar(value="{nombre}")
+        self._preview_nombre_var = tk.StringVar(value="")
 
         self._stamp_rect = None
         self._stamp_zone_text_var = tk.StringVar(value="")
@@ -820,7 +879,7 @@ class FirmadorApp:
 
     def _center(self):
         self.root.update_idletasks()
-        w, h = 680, 720
+        w, h = 680, 750
         x = (self.root.winfo_screenwidth() - w) // 2
         y = (self.root.winfo_screenheight() - h) // 2
         self.root.geometry(f"{w}x{h}+{x}+{y}")
@@ -868,15 +927,58 @@ class FirmadorApp:
             r2 = ttk.Frame(f)
             r2.pack(fill='x', pady=(5, 0))
             ttk.Checkbutton(
-                r2, text="Nombrar archivos con texto del PDF",
+                r2, text="Nombre de archivo desde el PDF",
                 variable=self._use_text_name,
                 command=self._toggle_text_name,
             ).pack(side='left')
-            self._zone_btn = ttk.Button(
-                r2, text="Seleccionar zona\u2026", command=self._sel_zone)
-            self._zone_info = ttk.Label(
-                f, textvariable=self._zone_text_var,
-                foreground='#444', font=('Segoe UI', 8))
+
+            self._name_controls = ttk.Frame(f)
+
+            rz = ttk.Frame(self._name_controls)
+            rz.pack(fill='x', pady=(3, 0))
+            ttk.Button(
+                rz, text="Seleccionar zona\u2026",
+                command=self._sel_zone,
+            ).pack(side='left')
+            ttk.Label(
+                rz, text="(opcional)",
+                foreground='#888', font=('Segoe UI', 7),
+            ).pack(side='left', padx=(5, 0))
+            ttk.Label(
+                rz, textvariable=self._zone_text_var,
+                foreground='#444', font=('Segoe UI', 8),
+            ).pack(side='left', padx=(5, 0))
+
+            rp = ttk.Frame(self._name_controls)
+            rp.pack(fill='x', pady=(3, 0))
+            ttk.Label(rp, text="Buscar en frase (opcional):",
+                      font=('Segoe UI', 8)).pack(side='left')
+            ttk.Entry(rp, textvariable=self._patron_var, width=34) \
+                .pack(side='left', padx=(5, 0), fill='x', expand=True)
+            ttk.Label(
+                self._name_controls,
+                text="  Ejemplo: acreditamos que {NOMBRE} ha asistido al curso",
+                foreground='#999', font=('Segoe UI', 7),
+            ).pack(anchor='w')
+
+            rt = ttk.Frame(self._name_controls)
+            rt.pack(fill='x', pady=(3, 0))
+            ttk.Label(rt, text="Nombre de archivo:",
+                      font=('Segoe UI', 8)).pack(side='left')
+            ttk.Entry(rt, textvariable=self._plantilla_var, width=36) \
+                .pack(side='left', padx=(5, 0), fill='x', expand=True)
+            ttk.Label(rt, text=".pdf", font=('Segoe UI', 8)) \
+                .pack(side='left')
+
+            ttk.Label(
+                self._name_controls,
+                textvariable=self._preview_nombre_var,
+                foreground='#1a5276', font=('Segoe UI', 8, 'bold'),
+            ).pack(anchor='w', pady=(3, 0))
+
+            self._patron_var.trace_add('write', self._update_nombre_preview)
+            self._plantilla_var.trace_add(
+                'write', self._update_nombre_preview)
 
     def _section_cert(self, parent):
         f = ttk.LabelFrame(
@@ -1031,18 +1133,60 @@ class FirmadorApp:
 
     # ── text zone ─────────────────────────────────────────────────────
 
+    def _get_page_text(self):
+        """Full text of page 1, cached for preview."""
+        if self._page_full_text is not None:
+            return self._page_full_text
+        pdf = self.pdf_var.get()
+        if not pdf or not os.path.isfile(pdf) or not HAS_FITZ:
+            return ""
+        try:
+            doc = fitz.open(pdf)
+            self._page_full_text = doc[0].get_text("text").strip()
+            doc.close()
+        except Exception:
+            self._page_full_text = ""
+        return self._page_full_text
+
+    def _update_nombre_preview(self, *_):
+        patron = self._patron_var.get().strip()
+        plantilla = self._plantilla_var.get().strip() or '{nombre}'
+        if self._zone_raw_text:
+            texto = self._zone_raw_text
+            if patron:
+                texto = _aplicar_patron(texto, patron)
+            texto = _sanitizar_nombre(texto)
+        elif patron:
+            page_text = self._get_page_text()
+            if not page_text:
+                self._preview_nombre_var.set("")
+                return
+            texto = _aplicar_patron(page_text, patron)
+            texto = _sanitizar_nombre(texto)
+        else:
+            self._preview_nombre_var.set("")
+            return
+        ejemplo = plantilla.replace('{nombre}', texto or '?')
+        ejemplo = ejemplo.replace('{NOMBRE}', texto or '?')
+        ejemplo = _sanitizar_nombre(ejemplo)
+        if ejemplo:
+            self._preview_nombre_var.set(f"\u2192 {ejemplo}.pdf")
+        else:
+            self._preview_nombre_var.set("(sin resultado)")
+
     def _toggle_text_name(self):
         if not HAS_FITZ:
             return
         if self._use_text_name.get():
-            self._zone_btn.pack(side='right')
-            if self._zone_text_var.get():
-                self._zone_info.pack(fill='x', pady=(3, 0))
+            self._name_controls.pack(fill='x')
+            self._update_nombre_preview()
         else:
-            self._zone_btn.pack_forget()
-            self._zone_info.pack_forget()
+            self._name_controls.pack_forget()
             self._text_rect = None
+            self._zone_raw_text = ""
+            self._page_full_text = None
             self._zone_text_var.set("")
+            self._preview_nombre_var.set("")
 
     def _sel_zone(self):
         pdf = self.pdf_var.get()
@@ -1055,16 +1199,15 @@ class FirmadorApp:
             if dlg.result:
                 self._text_rect = dlg.result
                 doc = fitz.open(pdf)
-                text = doc[0].get_text(
+                raw = doc[0].get_text(
                     "text", clip=fitz.Rect(*dlg.result)).strip()
                 doc.close()
-                text = _sanitizar_nombre(text)
-                if text:
-                    self._zone_text_var.set(f"Ej: \"{text}.pdf\"")
-                else:
-                    self._zone_text_var.set(
-                        "(no se detectó texto en la zona)")
-                self._zone_info.pack(fill='x', pady=(3, 0))
+                self._zone_raw_text = raw
+                preview = raw[:60] + ('\u2026' if len(raw) > 60 else '')
+                self._zone_text_var.set(
+                    f"\u2192 \"{preview}\"" if raw
+                    else "(sin texto en la zona)")
+                self._update_nombre_preview()
         except Exception as e:
             messagebox.showerror(
                 "Error", f"No se pudo abrir el PDF:\n{e}")
@@ -1099,12 +1242,16 @@ class FirmadorApp:
 
     def _reset_zone(self):
         self._text_rect = None
+        self._zone_raw_text = ""
+        self._page_full_text = None
         self._stamp_rect = None
         if HAS_FITZ:
             self._zone_text_var.set("")
+            self._preview_nombre_var.set("")
             self._stamp_zone_text_var.set("")
-            if hasattr(self, '_zone_info'):
-                self._zone_info.pack_forget()
+            if hasattr(self, '_name_controls'):
+                self._name_controls.pack_forget()
+            self._use_text_name.set(False)
 
     # ── validation & processing ──────────────────────────────────────
 
@@ -1177,8 +1324,12 @@ class FirmadorApp:
 
             pdf_signer = _crear_pdf_signer(signer_obj)
 
-            text_rect = (self._text_rect
-                         if self._use_text_name.get() else None)
+            use_text = self._use_text_name.get()
+            text_rect = self._text_rect if use_text else None
+            text_patron = (self._patron_var.get().strip()
+                           if use_text else None)
+            nombre_plantilla = (self._plantilla_var.get().strip()
+                                if use_text else None)
             stamp_rect = (self._stamp_rect
                           if self.posicion_var.get() == 'zona' else None)
             archivos = separar_y_sellar(
@@ -1189,6 +1340,8 @@ class FirmadorApp:
                 self.posicion_var.get(),
                 text_rect=text_rect,
                 stamp_rect=stamp_rect,
+                text_patron=text_patron,
+                nombre_plantilla=nombre_plantilla,
                 callback=lambda c, t, m: self._prog(c, t * 2, m),
             )
 
