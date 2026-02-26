@@ -286,8 +286,9 @@ class WindowsSigner(signers.Signer):
 def _crear_sello(ancho, alto, lineas, posicion, stamp_rect=None):
     buf = io.BytesIO()
     c = canvas.Canvas(buf, pagesize=(ancho, alto))
-    if posicion == 'zona' and stamp_rect:
-        _sello_zona(c, ancho, alto, lineas, stamp_rect)
+    if posicion == 'zona':
+        if stamp_rect:
+            _sello_zona(c, ancho, alto, lineas, stamp_rect)
     elif posicion == 'inferior':
         _sello_inferior(c, ancho, alto, lineas)
     else:
@@ -368,8 +369,19 @@ def _sello_izquierda(c, ancho, alto, lineas):
     c.restoreState()
 
 
+def _fit_font_size(font_name, text, max_width, start_size, min_size=4):
+    """Find the largest font size where text fits within max_width."""
+    from reportlab.pdfbase.pdfmetrics import stringWidth
+    sz = start_size
+    while sz > min_size:
+        if stringWidth(text, font_name, sz) <= max_width:
+            return sz
+        sz -= 0.5
+    return min_size
+
+
 def _sello_zona(c, ancho, alto, lineas, stamp_rect):
-    """Stamp placed inside a user-defined rectangle, Adobe-style."""
+    """Stamp placed inside a user-defined rectangle, auto-fit text."""
     x0, y0_mu, x1, y1_mu = stamp_rect
     rx = x0
     ry = alto - y1_mu
@@ -381,6 +393,7 @@ def _sello_zona(c, ancho, alto, lineas, stamp_rect):
 
     pad = min(4 * mm, rw * 0.06, rh * 0.08)
     radius = min(2.5 * mm, rw / 6, rh / 6)
+    avail_w = rw - 2 * pad
 
     c.setFillColor(BG_FILL)
     c.setStrokeColor(HexColor(ACCENT))
@@ -391,8 +404,15 @@ def _sello_zona(c, ancho, alto, lineas, stamp_rect):
     n = len(lineas)
     avail_h = rh - 2 * pad
     interlinea = min(6 * mm, avail_h / max(n + 0.3, 1))
-    header_sz = min(12, max(8, interlinea / mm * 1.5))
-    body_sz = min(10, max(7, header_sz * 0.78))
+    header_sz = min(12, max(5, interlinea / mm * 1.5))
+    body_sz = min(10, max(4, header_sz * 0.78))
+
+    header_sz = _fit_font_size(
+        'Helvetica-Bold', lineas[0], avail_w, header_sz)
+    body_sz = min(body_sz, header_sz * 0.85)
+    for ln in lineas[1:]:
+        body_sz = _fit_font_size(
+            'Helvetica-Bold', ln, avail_w, body_sz)
 
     tx = rx + pad
     ty = ry + rh - pad - header_sz * 0.4
@@ -516,17 +536,19 @@ def _extraer_nombres_paginas(pdf_path, total_pages, text_rect=None,
 # ── Zone selector dialog ─────────────────────────────────────────────────
 
 class ZoneSelectorDialog:
-    """Dialog to visually select a text region from the first PDF page."""
+    """Dialog to visually select a text region on a PDF page."""
 
-    def __init__(self, parent, pdf_path):
+    def __init__(self, parent, pdf_path, max_pages=None):
         self.result = None
+        self.result_page = 0
         self._doc = fitz.open(pdf_path)
-        page = self._doc[0]
+        self._max_page = min(
+            len(self._doc), max_pages or len(self._doc)) - 1
+        self._cur_page = 0
 
+        page = self._doc[0]
         max_w, max_h = 560, 700
         self.scale = min(max_w / page.rect.width, max_h / page.rect.height)
-        mat = fitz.Matrix(self.scale, self.scale)
-        pix = page.get_pixmap(matrix=mat, alpha=False)
 
         self._dlg = tk.Toplevel(parent)
         self._dlg.title("Seleccionar zona de texto")
@@ -538,16 +560,32 @@ class ZoneSelectorDialog:
         frm.pack(fill='both', expand=True)
 
         ttk.Label(
-            frm, text="Dibuje un rectángulo sobre la zona de texto:",
+            frm, text="Dibuje un rect\u00e1ngulo sobre la zona de texto:",
             font=('Segoe UI', 9),
         ).pack(anchor='w', pady=(0, 5))
 
+        nav = ttk.Frame(frm)
+        nav.pack(fill='x', pady=(0, 5))
+        self._btn_prev = ttk.Button(
+            nav, text="\u25c0 Anterior", width=12,
+            command=self._prev_page)
+        self._btn_prev.pack(side='left')
+        self._page_var = tk.StringVar()
+        ttk.Label(nav, textvariable=self._page_var,
+                  font=('Segoe UI', 9)).pack(side='left', padx=10)
+        self._btn_next = ttk.Button(
+            nav, text="Siguiente \u25b6", width=12,
+            command=self._next_page)
+        self._btn_next.pack(side='left')
+
+        pix = self._render_page(0)
         self._photo = tk.PhotoImage(data=pix.tobytes("ppm"))
         self._canvas = tk.Canvas(
             frm, width=pix.width, height=pix.height,
             cursor='crosshair', bg='white')
         self._canvas.pack()
-        self._canvas.create_image(0, 0, anchor='nw', image=self._photo)
+        self._img_id = self._canvas.create_image(
+            0, 0, anchor='nw', image=self._photo)
 
         self._canvas.bind('<ButtonPress-1>', self._on_press)
         self._canvas.bind('<B1-Motion>', self._on_drag)
@@ -558,14 +596,7 @@ class ZoneSelectorDialog:
             frm, textvariable=self._text_var,
             foreground='#333', font=('Segoe UI', 8),
             wraplength=pix.width,
-        ).pack(anchor='w', pady=(8, 0))
-
-        self._preview_var = tk.StringVar(value="")
-        ttk.Label(
-            frm, textvariable=self._preview_var,
-            foreground='#888', font=('Segoe UI', 7),
-            wraplength=pix.width,
-        ).pack(anchor='w', pady=(2, 5))
+        ).pack(anchor='w', pady=(8, 5))
 
         btn_frm = ttk.Frame(frm)
         btn_frm.pack(fill='x', pady=(5, 0))
@@ -578,6 +609,7 @@ class ZoneSelectorDialog:
         self._start_x = 0
         self._start_y = 0
         self._pdf_rect = None
+        self._update_nav()
 
         self._dlg.update_idletasks()
         dw = self._dlg.winfo_width()
@@ -585,8 +617,49 @@ class ZoneSelectorDialog:
         x = (self._dlg.winfo_screenwidth() - dw) // 2
         y = (self._dlg.winfo_screenheight() - dh) // 2
         self._dlg.geometry(f"+{x}+{y}")
-
         self._dlg.wait_window()
+
+    def _render_page(self, idx):
+        mat = fitz.Matrix(self.scale, self.scale)
+        return self._doc[idx].get_pixmap(matrix=mat, alpha=False)
+
+    def _show_page(self):
+        pix = self._render_page(self._cur_page)
+        self._photo = tk.PhotoImage(data=pix.tobytes("ppm"))
+        self._canvas.itemconfig(self._img_id, image=self._photo)
+        if self._rect_id:
+            self._canvas.delete(self._rect_id)
+            self._rect_id = None
+        if self._pdf_rect:
+            x0, y0, x1, y1 = self._pdf_rect
+            self._rect_id = self._canvas.create_rectangle(
+                x0 * self.scale, y0 * self.scale,
+                x1 * self.scale, y1 * self.scale,
+                outline='#e74c3c', width=2, dash=(5, 3))
+            self._show_text_preview()
+        else:
+            self._text_var.set("")
+        self._update_nav()
+
+    def _update_nav(self):
+        total = self._max_page + 1
+        self._page_var.set(
+            f"P\u00e1gina {self._cur_page + 1} de {total}")
+        self._btn_prev.configure(
+            state='normal' if self._cur_page > 0 else 'disabled')
+        self._btn_next.configure(
+            state='normal' if self._cur_page < self._max_page
+            else 'disabled')
+
+    def _prev_page(self):
+        if self._cur_page > 0:
+            self._cur_page -= 1
+            self._show_page()
+
+    def _next_page(self):
+        if self._cur_page < self._max_page:
+            self._cur_page += 1
+            self._show_page()
 
     def _on_press(self, event):
         self._start_x = event.x
@@ -606,30 +679,26 @@ class ZoneSelectorDialog:
         y0 = min(self._start_y, event.y) / self.scale
         x1 = max(self._start_x, event.x) / self.scale
         y1 = max(self._start_y, event.y) / self.scale
-
         if abs(x1 - x0) < 5 or abs(y1 - y0) < 5:
             return
-
         self._pdf_rect = (x0, y0, x1, y1)
-        rect = fitz.Rect(x0, y0, x1, y1)
+        self._show_text_preview()
 
-        text = self._doc[0].get_text("text", clip=rect).strip()
+    def _show_text_preview(self):
+        if not self._pdf_rect:
+            return
+        rect = fitz.Rect(*self._pdf_rect)
+        text = self._doc[self._cur_page].get_text(
+            "text", clip=rect).strip()
         if text:
-            self._text_var.set(f"Pág. 1: {text}")
-        else:
             self._text_var.set(
-                "(no se detectó texto en la zona seleccionada)")
-
-        previews = []
-        for p in range(1, min(4, len(self._doc))):
-            t = self._doc[p].get_text("text", clip=rect).strip()
-            if t:
-                previews.append(f"Pág. {p + 1}: {t}")
-        self._preview_var.set(
-            " | ".join(previews) if previews else "")
+                f"P\u00e1g. {self._cur_page + 1}: {text}")
+        else:
+            self._text_var.set("(sin texto en la zona seleccionada)")
 
     def _accept(self):
         self.result = self._pdf_rect
+        self.result_page = self._cur_page
         self._doc.close()
         self._dlg.destroy()
 
@@ -642,15 +711,17 @@ class ZoneSelectorDialog:
 class StampZoneSelectorDialog:
     """Dialog to select where to place the signature stamp on the page."""
 
-    def __init__(self, parent, pdf_path):
+    def __init__(self, parent, pdf_path, max_pages=None):
         self.result = None
+        self.result_page = 0
         self._doc = fitz.open(pdf_path)
-        page = self._doc[0]
+        self._max_page = min(
+            len(self._doc), max_pages or len(self._doc)) - 1
+        self._cur_page = 0
 
+        page = self._doc[0]
         max_w, max_h = 560, 700
         self.scale = min(max_w / page.rect.width, max_h / page.rect.height)
-        mat = fitz.Matrix(self.scale, self.scale)
-        pix = page.get_pixmap(matrix=mat, alpha=False)
 
         self._dlg = tk.Toplevel(parent)
         self._dlg.title("Seleccionar zona del sello")
@@ -663,16 +734,32 @@ class StampZoneSelectorDialog:
 
         ttk.Label(
             frm,
-            text="Dibuje un rectángulo donde colocar el sello de firma:",
+            text="Dibuje un rect\u00e1ngulo donde colocar el sello:",
             font=('Segoe UI', 9),
         ).pack(anchor='w', pady=(0, 5))
 
+        nav = ttk.Frame(frm)
+        nav.pack(fill='x', pady=(0, 5))
+        self._btn_prev = ttk.Button(
+            nav, text="\u25c0 Anterior", width=12,
+            command=self._prev_page)
+        self._btn_prev.pack(side='left')
+        self._page_var = tk.StringVar()
+        ttk.Label(nav, textvariable=self._page_var,
+                  font=('Segoe UI', 9)).pack(side='left', padx=10)
+        self._btn_next = ttk.Button(
+            nav, text="Siguiente \u25b6", width=12,
+            command=self._next_page)
+        self._btn_next.pack(side='left')
+
+        pix = self._render_page(0)
         self._photo = tk.PhotoImage(data=pix.tobytes("ppm"))
         self._canvas = tk.Canvas(
             frm, width=pix.width, height=pix.height,
             cursor='crosshair', bg='white')
         self._canvas.pack()
-        self._canvas.create_image(0, 0, anchor='nw', image=self._photo)
+        self._img_id = self._canvas.create_image(
+            0, 0, anchor='nw', image=self._photo)
 
         self._canvas.bind('<ButtonPress-1>', self._on_press)
         self._canvas.bind('<B1-Motion>', self._on_drag)
@@ -695,6 +782,7 @@ class StampZoneSelectorDialog:
         self._start_x = 0
         self._start_y = 0
         self._pdf_rect = None
+        self._update_nav()
 
         self._dlg.update_idletasks()
         dw = self._dlg.winfo_width()
@@ -702,8 +790,47 @@ class StampZoneSelectorDialog:
         x = (self._dlg.winfo_screenwidth() - dw) // 2
         y = (self._dlg.winfo_screenheight() - dh) // 2
         self._dlg.geometry(f"+{x}+{y}")
-
         self._dlg.wait_window()
+
+    def _render_page(self, idx):
+        mat = fitz.Matrix(self.scale, self.scale)
+        return self._doc[idx].get_pixmap(matrix=mat, alpha=False)
+
+    def _show_page(self):
+        pix = self._render_page(self._cur_page)
+        self._photo = tk.PhotoImage(data=pix.tobytes("ppm"))
+        self._canvas.itemconfig(self._img_id, image=self._photo)
+        if self._rect_id:
+            self._canvas.delete(self._rect_id)
+            self._rect_id = None
+        if self._pdf_rect:
+            x0, y0, x1, y1 = self._pdf_rect
+            self._rect_id = self._canvas.create_rectangle(
+                x0 * self.scale, y0 * self.scale,
+                x1 * self.scale, y1 * self.scale,
+                outline='#2980b9', width=2,
+                fill='#aed6f1', stipple='gray50')
+        self._update_nav()
+
+    def _update_nav(self):
+        total = self._max_page + 1
+        self._page_var.set(
+            f"P\u00e1gina {self._cur_page + 1} de {total}")
+        self._btn_prev.configure(
+            state='normal' if self._cur_page > 0 else 'disabled')
+        self._btn_next.configure(
+            state='normal' if self._cur_page < self._max_page
+            else 'disabled')
+
+    def _prev_page(self):
+        if self._cur_page > 0:
+            self._cur_page -= 1
+            self._show_page()
+
+    def _next_page(self):
+        if self._cur_page < self._max_page:
+            self._cur_page += 1
+            self._show_page()
 
     def _on_press(self, event):
         self._start_x = event.x
@@ -723,18 +850,18 @@ class StampZoneSelectorDialog:
         y0 = min(self._start_y, event.y) / self.scale
         x1 = max(self._start_x, event.x) / self.scale
         y1 = max(self._start_y, event.y) / self.scale
-
         if abs(x1 - x0) < 20 or abs(y1 - y0) < 15:
             return
-
         self._pdf_rect = (x0, y0, x1, y1)
         w_mm = (x1 - x0) * 25.4 / 72
         h_mm = (y1 - y0) * 25.4 / 72
         self._info_var.set(
-            f"Zona seleccionada: {w_mm:.0f} x {h_mm:.0f} mm")
+            f"Zona: {w_mm:.0f} x {h_mm:.0f} mm"
+            f" \u2014 p\u00e1gina {self._cur_page + 1}")
 
     def _accept(self):
         self.result = self._pdf_rect
+        self.result_page = self._cur_page
         self._doc.close()
         self._dlg.destroy()
 
@@ -746,7 +873,8 @@ class StampZoneSelectorDialog:
 
 def separar_y_sellar(pdf_path, output_dir, firmante, cargo, centro,
                      posicion, text_rect=None, stamp_rect=None,
-                     text_patron=None, nombre_plantilla=None,
+                     stamp_page=0, text_patron=None,
+                     nombre_plantilla=None, pages_per_doc=1,
                      callback=None):
     reader = PdfReader(pdf_path)
     if reader.is_encrypted:
@@ -755,8 +883,12 @@ def separar_y_sellar(pdf_path, output_dir, firmante, cargo, centro,
     if total == 0:
         raise ValueError("El PDF no contiene páginas.")
 
+    ppd = max(1, pages_per_doc)
     nombre = Path(pdf_path).stem
     lineas = _lineas_sello(firmante, cargo, centro)
+
+    chunks = list(range(0, total, ppd))
+    n_chunks = len(chunks)
 
     nombres_pag = _extraer_nombres_paginas(
         pdf_path, total, text_rect, text_patron)
@@ -766,15 +898,15 @@ def separar_y_sellar(pdf_path, output_dir, firmante, cargo, centro,
 
     nombres_finales = []
     used = set()
-    for i in range(total):
-        texto = nombres_pag[i] if nombres_pag else None
+    for ci, start in enumerate(chunks):
+        texto = nombres_pag[start] if nombres_pag else None
         if texto:
-            n = _aplicar_plantilla(plantilla, texto, nombre, i + 1)
+            n = _aplicar_plantilla(plantilla, texto, nombre, start + 1)
         else:
             n = _aplicar_plantilla(
-                '{original}_p{pagina}', None, nombre, i + 1)
+                '{original}_p{pagina}', None, nombre, start + 1)
         if not n:
-            n = f"{nombre}_p{i + 1:04d}"
+            n = f"{nombre}_p{start + 1:04d}"
         original_n = n
         suffix = 2
         while n in used:
@@ -784,24 +916,126 @@ def separar_y_sellar(pdf_path, output_dir, firmante, cargo, centro,
         nombres_finales.append(n)
 
     archivos = []
-    for i in range(total):
-        page = reader.pages[i]
-        ancho, alto = _page_dims(page)
-
-        overlay_buf = _crear_sello(ancho, alto, lineas, posicion, stamp_rect)
-        overlay_reader = PdfReader(overlay_buf)
-        page.merge_page(overlay_reader.pages[0])
-
+    for ci, start in enumerate(chunks):
+        end = min(start + ppd, total)
         writer = PdfWriter()
-        writer.add_page(page)
-        out = os.path.join(output_dir, f"{nombres_finales[i]}.pdf")
-        with open(out, 'wb') as f:
-            writer.write(f)
+        for i in range(start, end):
+            page = reader.pages[i]
+            ancho, alto = _page_dims(page)
+            page_in_chunk = i - start
+            if posicion == 'zona' and page_in_chunk != stamp_page:
+                pass
+            else:
+                sr = stamp_rect if posicion == 'zona' else None
+                overlay_buf = _crear_sello(
+                    ancho, alto, lineas, posicion, sr)
+                overlay_reader = PdfReader(overlay_buf)
+                page.merge_page(overlay_reader.pages[0])
+            writer.add_page(page)
+        out = os.path.join(output_dir, f"{nombres_finales[ci]}.pdf")
+        with open(out, 'wb') as fout:
+            writer.write(fout)
         archivos.append(out)
+        if callback:
+            callback(ci + 1, n_chunks,
+                     f"Separando y sellando documento {ci + 1}"
+                     f" de {n_chunks}\u2026")
+    return archivos
 
+
+def sellar_pdf(pdf_path, output_dir, firmante, cargo, centro,
+               posicion, stamp_rect=None, stamp_page=0, callback=None):
+    """Stamp a single PDF without splitting."""
+    reader = PdfReader(pdf_path)
+    if reader.is_encrypted:
+        raise ValueError("El PDF está protegido. Desprotéjalo primero.")
+    total = len(reader.pages)
+    if total == 0:
+        raise ValueError("El PDF no contiene páginas.")
+
+    lineas = _lineas_sello(firmante, cargo, centro)
+    writer = PdfWriter()
+    for i, page in enumerate(reader.pages):
+        ancho, alto = _page_dims(page)
+        if posicion == 'zona' and i != stamp_page:
+            pass
+        else:
+            sr = stamp_rect if posicion == 'zona' else None
+            overlay_buf = _crear_sello(
+                ancho, alto, lineas, posicion, sr)
+            overlay_reader = PdfReader(overlay_buf)
+            page.merge_page(overlay_reader.pages[0])
+        writer.add_page(page)
         if callback:
             callback(i + 1, total,
-                     f"Separando y sellando página {i + 1} de {total}\u2026")
+                     f"Sellando p\u00e1gina {i + 1} de {total}\u2026")
+
+    nombre = Path(pdf_path).stem
+    out = os.path.join(output_dir, f"{nombre}.pdf")
+    with open(out, 'wb') as fout:
+        writer.write(fout)
+    return [out]
+
+
+def sellar_carpeta(folder_path, output_dir, firmante, cargo, centro,
+                   posicion, stamp_rect=None, stamp_page=0,
+                   text_rect=None, text_patron=None,
+                   nombre_plantilla=None, callback=None):
+    """Stamp all PDFs in a folder without splitting pages."""
+    pdfs = sorted(
+        f for f in os.listdir(folder_path)
+        if f.lower().endswith('.pdf'))
+    if not pdfs:
+        raise ValueError("No se encontraron archivos PDF en la carpeta.")
+
+    use_names = text_rect or text_patron
+    lineas = _lineas_sello(firmante, cargo, centro)
+    total = len(pdfs)
+    used = set()
+    archivos = []
+    for idx, fname in enumerate(pdfs):
+        src = os.path.join(folder_path, fname)
+        reader = PdfReader(src)
+        if reader.is_encrypted:
+            continue
+        writer = PdfWriter()
+        for pi, page in enumerate(reader.pages):
+            ancho, alto = _page_dims(page)
+            if posicion == 'zona' and pi != stamp_page:
+                pass
+            else:
+                sr = stamp_rect if posicion == 'zona' else None
+                overlay_buf = _crear_sello(
+                    ancho, alto, lineas, posicion, sr)
+                overlay_reader = PdfReader(overlay_buf)
+                page.merge_page(overlay_reader.pages[0])
+            writer.add_page(page)
+
+        out_name = Path(fname).stem
+        if use_names:
+            nombres = _extraer_nombres_paginas(
+                src, 1, text_rect, text_patron)
+            texto = nombres[0] if nombres and nombres[0] else None
+            plantilla = nombre_plantilla or (
+                '{nombre}' if texto else '{original}')
+            out_name = _aplicar_plantilla(
+                plantilla, texto, Path(fname).stem, idx + 1)
+            if not out_name:
+                out_name = Path(fname).stem
+
+        original_name = out_name
+        suffix = 2
+        while out_name in used:
+            out_name = f"{original_name} ({suffix})"
+            suffix += 1
+        used.add(out_name)
+
+        out = os.path.join(output_dir, f"{out_name}.pdf")
+        with open(out, 'wb') as fout:
+            writer.write(fout)
+        archivos.append(out)
+        if callback:
+            callback(idx + 1, total, f"Sellando {fname}\u2026")
     return archivos
 
 
@@ -843,11 +1077,16 @@ class FirmadorApp:
     def __init__(self, root):
         self.root = root
         self.root.title("Firmador de PDFs \u2013 Certificado FNMT")
-        self.root.geometry("680x750")
-        self.root.resizable(False, False)
+        self.root.geometry("680x780")
+        self.root.resizable(False, True)
+        self.root.minsize(680, 500)
         self._center()
 
+        self.mode_var = tk.StringVar(value='single')
         self.pdf_var = tk.StringVar()
+        self.folder_var = tk.StringVar()
+        self._folder_count_var = tk.StringVar(value="")
+        self._pages_per_doc = tk.IntVar(value=1)
         self.cert_mode = tk.StringVar(
             value='store' if HAS_WIN_CERT_STORE else 'file')
         self.cert_var = tk.StringVar()
@@ -873,13 +1112,14 @@ class FirmadorApp:
         self._preview_nombre_var = tk.StringVar(value="")
 
         self._stamp_rect = None
+        self._stamp_page = 0
         self._stamp_zone_text_var = tk.StringVar(value="")
 
         self._build_ui()
 
     def _center(self):
         self.root.update_idletasks()
-        w, h = 680, 750
+        w, h = 680, 780
         x = (self.root.winfo_screenwidth() - w) // 2
         y = (self.root.winfo_screenheight() - h) // 2
         self.root.geometry(f"{w}x{h}+{x}+{y}")
@@ -887,14 +1127,36 @@ class FirmadorApp:
     def _build_ui(self):
         ttk.Style().configure('T.TLabel', font=('Segoe UI', 13, 'bold'))
 
-        m = ttk.Frame(self.root, padding=15)
-        m.pack(fill='both', expand=True)
+        outer = ttk.Frame(self.root)
+        outer.pack(fill='both', expand=True)
+
+        self._canvas = tk.Canvas(outer, highlightthickness=0)
+        vsb = ttk.Scrollbar(outer, orient='vertical',
+                             command=self._canvas.yview)
+        self._canvas.configure(yscrollcommand=vsb.set)
+        vsb.pack(side='right', fill='y')
+        self._canvas.pack(side='left', fill='both', expand=True)
+
+        m = ttk.Frame(self._canvas, padding=15)
+        self._canvas_win = self._canvas.create_window(
+            (0, 0), window=m, anchor='nw')
+
+        def _on_configure(_):
+            self._canvas.configure(scrollregion=self._canvas.bbox('all'))
+        m.bind('<Configure>', _on_configure)
+
+        def _on_canvas_configure(e):
+            self._canvas.itemconfig(self._canvas_win, width=e.width)
+        self._canvas.bind('<Configure>', _on_canvas_configure)
+
+        def _on_mousewheel(e):
+            self._canvas.yview_scroll(int(-e.delta / 120), 'units')
+        self.root.bind_all('<MouseWheel>', _on_mousewheel)
 
         ttk.Label(m, text="Firmador de PDFs", style='T.TLabel').pack(anchor='w')
         ttk.Label(
             m, foreground='#666', font=('Segoe UI', 8),
-            text="Separa, sella y firma digitalmente documentos PDF "
-                 "con certificado FNMT",
+            text="Separa, sella y firma digitalmente documentos PDF",
         ).pack(anchor='w', pady=(0, 10))
 
         self._section_pdf(m)
@@ -914,23 +1176,62 @@ class FirmadorApp:
     # ── sections ─────────────────────────────────────────────────────
 
     def _section_pdf(self, parent):
-        f = ttk.LabelFrame(parent, text=" Documento PDF ", padding=8)
+        f = ttk.LabelFrame(parent, text=" Documentos ", padding=8)
         f.pack(fill='x', pady=(0, 6))
-        r = ttk.Frame(f)
-        r.pack(fill='x')
+
+        rm = ttk.Frame(f)
+        rm.pack(fill='x')
+        for txt, val in [("Firmar un PDF", 'single'),
+                         ("Separar y firmar", 'split'),
+                         ("Firmar carpeta", 'folder')]:
+            ttk.Radiobutton(
+                rm, text=txt, variable=self.mode_var, value=val,
+                command=self._toggle_mode,
+            ).pack(side='left', padx=(0, 10))
+
+        # ── PDF file picker (shared by single + split) ──
+        self._pdf_row = ttk.Frame(f)
+        r = ttk.Frame(self._pdf_row)
+        r.pack(fill='x', pady=(5, 0))
         ttk.Entry(r, textvariable=self.pdf_var) \
             .pack(side='left', fill='x', expand=True, padx=(0, 5))
         ttk.Button(r, text="Examinar\u2026", command=self._sel_pdf) \
             .pack(side='right')
+        self._pdf_row.pack(fill='x')
 
+        # ── pages per doc (only for split) ──
+        self._pages_row = ttk.Frame(f)
+        ttk.Label(self._pages_row,
+                  text="P\u00e1ginas por documento:",
+                  font=('Segoe UI', 8)).pack(side='left')
+        ttk.Spinbox(
+            self._pages_row, from_=1, to=999, width=4,
+            textvariable=self._pages_per_doc,
+        ).pack(side='left', padx=(5, 0))
+
+        # ── folder picker (only for folder) ──
+        self._folder_frame = ttk.Frame(f)
+        rf = ttk.Frame(self._folder_frame)
+        rf.pack(fill='x', pady=(5, 0))
+        ttk.Entry(rf, textvariable=self.folder_var) \
+            .pack(side='left', fill='x', expand=True, padx=(0, 5))
+        ttk.Button(rf, text="Examinar\u2026",
+                   command=self._sel_folder).pack(side='right')
+        ttk.Label(
+            self._folder_frame,
+            textvariable=self._folder_count_var,
+            foreground='#444', font=('Segoe UI', 8),
+        ).pack(anchor='w', pady=(3, 0))
+
+        # ── naming controls (for split + folder) ──
         if HAS_FITZ:
             r2 = ttk.Frame(f)
-            r2.pack(fill='x', pady=(5, 0))
             ttk.Checkbutton(
                 r2, text="Nombre de archivo desde el PDF",
                 variable=self._use_text_name,
                 command=self._toggle_text_name,
             ).pack(side='left')
+            self._name_check_frame = r2
 
             self._name_controls = ttk.Frame(f)
 
@@ -957,7 +1258,8 @@ class FirmadorApp:
                 .pack(side='left', padx=(5, 0), fill='x', expand=True)
             ttk.Label(
                 self._name_controls,
-                text="  Ejemplo: acreditamos que {NOMBRE} ha asistido al curso",
+                text="  Ejemplo: acreditamos que {NOMBRE}"
+                     " ha asistido al curso",
                 foreground='#999', font=('Segoe UI', 7),
             ).pack(anchor='w')
 
@@ -967,8 +1269,8 @@ class FirmadorApp:
                       font=('Segoe UI', 8)).pack(side='left')
             ttk.Entry(rt, textvariable=self._plantilla_var, width=36) \
                 .pack(side='left', padx=(5, 0), fill='x', expand=True)
-            ttk.Label(rt, text=".pdf", font=('Segoe UI', 8)) \
-                .pack(side='left')
+            ttk.Label(rt, text=".pdf",
+                      font=('Segoe UI', 8)).pack(side='left')
 
             ttk.Label(
                 self._name_controls,
@@ -976,7 +1278,8 @@ class FirmadorApp:
                 foreground='#1a5276', font=('Segoe UI', 8, 'bold'),
             ).pack(anchor='w', pady=(3, 0))
 
-            self._patron_var.trace_add('write', self._update_nombre_preview)
+            self._patron_var.trace_add(
+                'write', self._update_nombre_preview)
             self._plantilla_var.trace_add(
                 'write', self._update_nombre_preview)
 
@@ -1131,14 +1434,52 @@ class FirmadorApp:
         if p:
             self.output_var.set(p)
 
+    def _toggle_mode(self):
+        self._page_full_text = None
+        mode = self.mode_var.get()
+
+        self._pdf_row.pack_forget()
+        self._pages_row.pack_forget()
+        self._folder_frame.pack_forget()
+        if HAS_FITZ:
+            self._name_check_frame.pack_forget()
+            self._name_controls.pack_forget()
+
+        if mode in ('single', 'split'):
+            self._pdf_row.pack(fill='x')
+            if mode == 'split':
+                self._pages_row.pack(fill='x', pady=(5, 0))
+        else:
+            self._folder_frame.pack(fill='x')
+
+        if mode in ('split', 'folder') and HAS_FITZ:
+            self._name_check_frame.pack(fill='x', pady=(5, 0))
+            if self._use_text_name.get():
+                self._name_controls.pack(fill='x')
+        elif HAS_FITZ:
+            self._use_text_name.set(False)
+
+    def _sel_folder(self):
+        p = filedialog.askdirectory(title="Seleccionar carpeta con PDFs")
+        if p:
+            self.folder_var.set(p)
+            count = len([f for f in os.listdir(p)
+                         if f.lower().endswith('.pdf')])
+            s = 's' if count != 1 else ''
+            self._folder_count_var.set(
+                f"{count} archivo{s} PDF encontrado{s}")
+            if not self.output_var.get():
+                self.output_var.set(
+                    str(Path(p) / "firmados"))
+
     # ── text zone ─────────────────────────────────────────────────────
 
     def _get_page_text(self):
         """Full text of page 1, cached for preview."""
         if self._page_full_text is not None:
             return self._page_full_text
-        pdf = self.pdf_var.get()
-        if not pdf or not os.path.isfile(pdf) or not HAS_FITZ:
+        pdf = self._get_reference_pdf()
+        if not pdf or not HAS_FITZ:
             return ""
         try:
             doc = fitz.open(pdf)
@@ -1189,17 +1530,21 @@ class FirmadorApp:
             self._preview_nombre_var.set("")
 
     def _sel_zone(self):
-        pdf = self.pdf_var.get()
-        if not pdf or not os.path.isfile(pdf):
+        pdf = self._get_reference_pdf()
+        if not pdf:
             messagebox.showwarning(
-                "Atención", "Seleccione primero un archivo PDF.")
+                "Atención", "Seleccione primero un archivo PDF"
+                " o una carpeta.")
             return
+        self._page_full_text = None
+        mp = (self._pages_per_doc.get()
+              if self.mode_var.get() == 'split' else None)
         try:
-            dlg = ZoneSelectorDialog(self.root, pdf)
+            dlg = ZoneSelectorDialog(self.root, pdf, max_pages=mp)
             if dlg.result:
                 self._text_rect = dlg.result
                 doc = fitz.open(pdf)
-                raw = doc[0].get_text(
+                raw = doc[dlg.result_page].get_text(
                     "text", clip=fitz.Rect(*dlg.result)).strip()
                 doc.close()
                 self._zone_raw_text = raw
@@ -1222,20 +1567,38 @@ class FirmadorApp:
             self._stamp_rect = None
             self._stamp_zone_text_var.set("")
 
-    def _sel_stamp_zone(self):
+    def _get_reference_pdf(self):
+        """Return a PDF path to use as visual reference."""
+        if self.mode_var.get() == 'folder':
+            folder = self.folder_var.get()
+            if folder and os.path.isdir(folder):
+                for f in sorted(os.listdir(folder)):
+                    if f.lower().endswith('.pdf'):
+                        return os.path.join(folder, f)
+            return None
         pdf = self.pdf_var.get()
-        if not pdf or not os.path.isfile(pdf):
+        return pdf if pdf and os.path.isfile(pdf) else None
+
+    def _sel_stamp_zone(self):
+        pdf = self._get_reference_pdf()
+        if not pdf:
             messagebox.showwarning(
-                "Atención", "Seleccione primero un archivo PDF.")
+                "Atención", "Seleccione primero un archivo PDF"
+                " o una carpeta.")
             return
         try:
-            dlg = StampZoneSelectorDialog(self.root, pdf)
+            mp = (self._pages_per_doc.get()
+                  if self.mode_var.get() == 'split' else None)
+            dlg = StampZoneSelectorDialog(self.root, pdf, max_pages=mp)
             if dlg.result:
                 self._stamp_rect = dlg.result
+                self._stamp_page = dlg.result_page
                 w_mm = (dlg.result[2] - dlg.result[0]) * 25.4 / 72
                 h_mm = (dlg.result[3] - dlg.result[1]) * 25.4 / 72
+                pg = dlg.result_page + 1
                 self._stamp_zone_text_var.set(
-                    f"Zona: {w_mm:.0f} x {h_mm:.0f} mm")
+                    f"Zona: {w_mm:.0f} x {h_mm:.0f} mm"
+                    f" \u2014 p\u00e1gina {pg}")
         except Exception as e:
             messagebox.showerror(
                 "Error", f"No se pudo abrir el PDF:\n{e}")
@@ -1245,6 +1608,7 @@ class FirmadorApp:
         self._zone_raw_text = ""
         self._page_full_text = None
         self._stamp_rect = None
+        self._stamp_page = 0
         if HAS_FITZ:
             self._zone_text_var.set("")
             self._preview_nombre_var.set("")
@@ -1256,12 +1620,25 @@ class FirmadorApp:
     # ── validation & processing ──────────────────────────────────────
 
     def _validate(self):
-        if not self.pdf_var.get():
-            messagebox.showwarning("Atención", "Seleccione un archivo PDF.")
-            return False
-        if not os.path.isfile(self.pdf_var.get()):
-            messagebox.showerror("Error", "El archivo PDF no existe.")
-            return False
+        mode = self.mode_var.get()
+        if mode in ('single', 'split'):
+            if not self.pdf_var.get():
+                messagebox.showwarning(
+                    "Atención", "Seleccione un archivo PDF.")
+                return False
+            if not os.path.isfile(self.pdf_var.get()):
+                messagebox.showerror(
+                    "Error", "El archivo PDF no existe.")
+                return False
+        else:
+            if not self.folder_var.get():
+                messagebox.showwarning(
+                    "Atención", "Seleccione una carpeta con archivos PDF.")
+                return False
+            if not os.path.isdir(self.folder_var.get()):
+                messagebox.showerror(
+                    "Error", "La carpeta seleccionada no existe.")
+                return False
 
         if self.cert_mode.get() == 'file':
             if not self.cert_var.get():
@@ -1323,27 +1700,44 @@ class FirmadorApp:
                 signer_obj = WindowsSigner(self._win_session)
 
             pdf_signer = _crear_pdf_signer(signer_obj)
-
+            stamp_rect = (self._stamp_rect
+                          if self.posicion_var.get() == 'zona' else None)
             use_text = self._use_text_name.get()
             text_rect = self._text_rect if use_text else None
             text_patron = (self._patron_var.get().strip()
                            if use_text else None)
             nombre_plantilla = (self._plantilla_var.get().strip()
                                 if use_text else None)
-            stamp_rect = (self._stamp_rect
-                          if self.posicion_var.get() == 'zona' else None)
-            archivos = separar_y_sellar(
-                self.pdf_var.get(), out_dir,
-                self.firmante_var.get().strip(),
-                self.cargo_var.get().strip(),
-                self.centro_var.get().strip(),
-                self.posicion_var.get(),
-                text_rect=text_rect,
+
+            mode = self.mode_var.get()
+            common = dict(
+                firmante=self.firmante_var.get().strip(),
+                cargo=self.cargo_var.get().strip(),
+                centro=self.centro_var.get().strip(),
+                posicion=self.posicion_var.get(),
                 stamp_rect=stamp_rect,
-                text_patron=text_patron,
-                nombre_plantilla=nombre_plantilla,
+                stamp_page=self._stamp_page,
                 callback=lambda c, t, m: self._prog(c, t * 2, m),
             )
+
+            if mode == 'single':
+                archivos = sellar_pdf(
+                    self.pdf_var.get(), out_dir, **common)
+            elif mode == 'folder':
+                archivos = sellar_carpeta(
+                    self.folder_var.get(), out_dir, **common,
+                    text_rect=text_rect,
+                    text_patron=text_patron,
+                    nombre_plantilla=nombre_plantilla,
+                )
+            else:
+                archivos = separar_y_sellar(
+                    self.pdf_var.get(), out_dir, **common,
+                    text_rect=text_rect,
+                    text_patron=text_patron,
+                    nombre_plantilla=nombre_plantilla,
+                    pages_per_doc=self._pages_per_doc.get(),
+                )
 
             total = len(archivos)
             for i, fpath in enumerate(archivos):

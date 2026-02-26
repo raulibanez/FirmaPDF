@@ -1,8 +1,8 @@
 # FirmaPDF
 
-Utilidad de escritorio para **separar un PDF multipágina en documentos individuales**, añadir un **sello visible** con los datos del firmante y **firmar digitalmente** cada página con certificado de la FNMT (u otro certificado PKCS#12).
+Utilidad de escritorio para **separar, sellar y firmar digitalmente documentos PDF** con certificado de la FNMT (u otro certificado PKCS#12).
 
-Pensado para cualquier persona que necesite firmar documentos PDF de forma masiva con su certificado digital.
+Pensado para cualquier persona que necesite firmar documentos PDF de forma masiva con su certificado digital: certificados de asistencia, actas, diplomas, expedientes, etc.
 
 ![Python](https://img.shields.io/badge/Python-3.9%2B-blue)
 ![Windows](https://img.shields.io/badge/Plataforma-Windows-0078D6)
@@ -15,12 +15,15 @@ Pensado para cualquier persona que necesite firmar documentos PDF de forma masiv
 
 ## Funcionalidades
 
-- Separa un PDF de N páginas en N documentos individuales
+- **Tres modos de trabajo**:
+  - **Firmar un PDF** — sella y firma un PDF multipágina tal cual, sin cortarlo
+  - **Separar y firmar** — divide un PDF en documentos individuales (configurable: cada 1, 2, 3… páginas), sella y firma cada uno
+  - **Firmar carpeta** — sella y firma todos los PDFs de una carpeta de una vez
 - Añade un **sello visible** configurable: nombre del firmante, cargo, organización y fecha/hora
 - Tres posiciones del sello:
   - **Inferior** — franja en la parte baja de cada página
   - **Lateral izquierdo** — franja vertical en el margen izquierdo
-  - **Zona personalizada** — selección visual sobre la página, estilo Adobe, con texto en mayúsculas y tamaño adaptable
+  - **Zona personalizada** — selección visual sobre la página, estilo Adobe, con texto en mayúsculas y **tamaño de fuente auto-ajustable** al área seleccionada (si la zona es pequeña, el texto se reduce automáticamente para no desbordarse)
 - **Nombre automático de archivos desde el PDF**:
   - **Seleccionar zona**: dibuja un rectángulo sobre la página y se extrae el texto de esa posición en cada página (útil para expedientes, DNIs, referencias, etc.)
   - **Buscar en frase**: escribe una frase del tipo *"acreditamos que {NOMBRE} ha asistido al curso"* y el programa extrae automáticamente lo que haya en `{NOMBRE}` de cada página, sin necesidad de seleccionar zona
@@ -106,11 +109,14 @@ El ejecutable se generará en la carpeta `dist/FirmaPDF.exe`.
 
 ## Uso
 
-1. **Selecciona el PDF** multipágina que quieres separar y firmar
-2. *(Opcional)* Marca **"Nombre de archivo desde el PDF"**:
+1. **Elige el modo de trabajo**:
+   - **Firmar un PDF**: selecciona un PDF y se sellará y firmará sin cortarlo
+   - **Separar y firmar**: selecciona un PDF multipágina y elige cuántas páginas tendrá cada documento resultante
+   - **Firmar carpeta**: selecciona una carpeta y se sellarán y firmarán todos los PDFs que contenga
+2. *(Modos separar y carpeta, opcional)* Marca **"Nombre de archivo desde el PDF"**:
    - Pulsa **"Seleccionar zona…"** para dibujar un área de donde extraer texto, o
    - Escribe una frase en **"Buscar en frase"** usando `{NOMBRE}` como comodín (ej: `acreditamos que {NOMBRE} ha asistido`)
-   - Personaliza el **nombre de archivo** con una plantilla (ej: `Certificado_{nombre}`)
+   - Personaliza el **nombre de archivo** (ej: `Certificado_{nombre}`)
    - La vista previa te muestra al instante cómo quedará el nombre
 3. **Elige el certificado**:
    - **Almacén de Windows** (recomendado): pulsa "Seleccionar..." y elige tu certificado FNMT del diálogo nativo de Windows
@@ -118,11 +124,9 @@ El ejecutable se generará en la carpeta `dist/FirmaPDF.exe`.
 4. **Rellena los datos del sello**: nombre del firmante, cargo y organización
 5. **Elige la posición del sello**:
    - **Inferior** o **Lateral izquierdo** para posiciones predefinidas
-   - **Zona personalizada** para dibujar sobre la página exactamente dónde colocar el sello (estilo Adobe)
+   - **Zona personalizada** para dibujar sobre la página exactamente dónde colocar el sello
 6. **Selecciona la carpeta de salida**
 7. Pulsa **"Firmar Documentos"**
-
-Cada página del PDF original se guardará como un documento independiente, con el sello visible y la firma digital incorporada.
 
 ---
 

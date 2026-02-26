@@ -36,3 +36,6 @@ desktop.ini
 venv/
 .venv/
 env/
+
+# Playground - Zona de pruebas
+playground/
