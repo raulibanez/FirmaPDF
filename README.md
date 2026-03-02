@@ -7,7 +7,7 @@ Pensado para cualquier persona que necesite firmar documentos PDF de forma masiv
 ![Python](https://img.shields.io/badge/Python-3.9%2B-blue)
 ![Windows](https://img.shields.io/badge/Plataforma-Windows-0078D6)
 ![License](https://img.shields.io/badge/Licencia-MIT-green)
-![Version](https://img.shields.io/badge/Versión-1.2-orange)
+![Version](https://img.shields.io/badge/Versión-1.3-orange)
 
 ![Captura de FirmaPDF](screenshot.png)
 
@@ -15,10 +15,11 @@ Pensado para cualquier persona que necesite firmar documentos PDF de forma masiv
 
 ## Funcionalidades
 
-- **Tres modos de trabajo**:
+- **Cuatro modos de trabajo**:
   - **Firmar un PDF** — sella y firma un PDF multipágina tal cual, sin cortarlo
   - **Separar y firmar** — divide un PDF en documentos individuales (configurable: cada 1, 2, 3… páginas), sella y firma cada uno
   - **Firmar carpeta** — sella y firma todos los PDFs de una carpeta de una vez
+  - **Solo separar** — divide un PDF en documentos individuales sin sellar ni firmar (útil para preparar documentos antes de firmarlos)
 - Añade un **sello visible** configurable: nombre del firmante, cargo, organización y fecha/hora
 - Tres posiciones del sello:
   - **Inferior** — franja en la parte baja de cada página
@@ -113,20 +114,21 @@ El ejecutable se generará en la carpeta `dist/FirmaPDF.exe`.
    - **Firmar un PDF**: selecciona un PDF y se sellará y firmará sin cortarlo
    - **Separar y firmar**: selecciona un PDF multipágina y elige cuántas páginas tendrá cada documento resultante
    - **Firmar carpeta**: selecciona una carpeta y se sellarán y firmarán todos los PDFs que contenga
-2. *(Modos separar y carpeta, opcional)* Marca **"Nombre de archivo desde el PDF"**:
+   - **Solo separar**: divide un PDF en documentos sin sellar ni firmar
+2. *(Modos separar, carpeta y solo separar, opcional)* Marca **"Nombre de archivo desde el PDF"**:
    - Pulsa **"Seleccionar zona…"** para dibujar un área de donde extraer texto, o
    - Escribe una frase en **"Buscar en frase"** usando `{NOMBRE}` como comodín (ej: `acreditamos que {NOMBRE} ha asistido`)
    - Personaliza el **nombre de archivo** (ej: `Certificado_{nombre}`)
    - La vista previa te muestra al instante cómo quedará el nombre
-3. **Elige el certificado**:
+3. *(Solo modos de firma)* **Elige el certificado**:
    - **Almacén de Windows** (recomendado): pulsa "Seleccionar..." y elige tu certificado FNMT del diálogo nativo de Windows
    - **Archivo .pfx / .p12**: selecciona el archivo e introduce la contraseña
-4. **Rellena los datos del sello**: nombre del firmante, cargo y organización
-5. **Elige la posición del sello**:
+4. *(Solo modos de firma)* **Rellena los datos del sello**: nombre del firmante, cargo y organización
+5. *(Solo modos de firma)* **Elige la posición del sello**:
    - **Inferior** o **Lateral izquierdo** para posiciones predefinidas
    - **Zona personalizada** para dibujar sobre la página exactamente dónde colocar el sello
 6. **Selecciona la carpeta de salida**
-7. Pulsa **"Firmar Documentos"**
+7. Pulsa **"Firmar Documentos"** o **"Separar Documentos"** según el modo
 
 ---
 

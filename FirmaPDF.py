@@ -943,6 +943,64 @@ def separar_y_sellar(pdf_path, output_dir, firmante, cargo, centro,
     return archivos
 
 
+def separar_pdf(pdf_path, output_dir, text_rect=None, text_patron=None,
+                nombre_plantilla=None, pages_per_doc=1, callback=None):
+    """Split a PDF into chunks without stamping or signing."""
+    reader = PdfReader(pdf_path)
+    if reader.is_encrypted:
+        raise ValueError("El PDF está protegido. Desprotéjalo primero.")
+    total = len(reader.pages)
+    if total == 0:
+        raise ValueError("El PDF no contiene páginas.")
+
+    ppd = max(1, pages_per_doc)
+    nombre = Path(pdf_path).stem
+
+    chunks = list(range(0, total, ppd))
+    n_chunks = len(chunks)
+
+    nombres_pag = _extraer_nombres_paginas(
+        pdf_path, total, text_rect, text_patron)
+    has_names = text_rect or text_patron
+    plantilla = nombre_plantilla or (
+        '{nombre}' if has_names else '{original}_p{pagina}')
+
+    nombres_finales = []
+    used = set()
+    for ci, start in enumerate(chunks):
+        texto = nombres_pag[start] if nombres_pag else None
+        if texto:
+            n = _aplicar_plantilla(plantilla, texto, nombre, start + 1)
+        else:
+            n = _aplicar_plantilla(
+                '{original}_p{pagina}', None, nombre, start + 1)
+        if not n:
+            n = f"{nombre}_p{start + 1:04d}"
+        original_n = n
+        suffix = 2
+        while n in used:
+            n = f"{original_n} ({suffix})"
+            suffix += 1
+        used.add(n)
+        nombres_finales.append(n)
+
+    archivos = []
+    for ci, start in enumerate(chunks):
+        end = min(start + ppd, total)
+        writer = PdfWriter()
+        for i in range(start, end):
+            writer.add_page(reader.pages[i])
+        out = os.path.join(output_dir, f"{nombres_finales[ci]}.pdf")
+        with open(out, 'wb') as fout:
+            writer.write(fout)
+        archivos.append(out)
+        if callback:
+            callback(ci + 1, n_chunks,
+                     f"Separando documento {ci + 1}"
+                     f" de {n_chunks}\u2026")
+    return archivos
+
+
 def sellar_pdf(pdf_path, output_dir, firmante, cargo, centro,
                posicion, stamp_rect=None, stamp_page=0, callback=None):
     """Stamp a single PDF without splitting."""
@@ -1183,7 +1241,8 @@ class FirmadorApp:
         rm.pack(fill='x')
         for txt, val in [("Firmar un PDF", 'single'),
                          ("Separar y firmar", 'split'),
-                         ("Firmar carpeta", 'folder')]:
+                         ("Firmar carpeta", 'folder'),
+                         ("Solo separar", 'separate')]:
             ttk.Radiobutton(
                 rm, text=txt, variable=self.mode_var, value=val,
                 command=self._toggle_mode,
@@ -1287,6 +1346,7 @@ class FirmadorApp:
         f = ttk.LabelFrame(
             parent, text=" Certificado Digital ", padding=8)
         f.pack(fill='x', pady=(0, 6))
+        self._cert_frame = f
 
         if HAS_WIN_CERT_STORE:
             mode_row = ttk.Frame(f)
@@ -1339,6 +1399,7 @@ class FirmadorApp:
     def _section_sello(self, parent):
         f = ttk.LabelFrame(parent, text=" Datos del Sello ", padding=8)
         f.pack(fill='x', pady=(0, 6))
+        self._sello_frame = f
         g = ttk.Frame(f)
         g.pack(fill='x')
         for i, (lbl, var) in enumerate([
@@ -1385,6 +1446,7 @@ class FirmadorApp:
     def _section_salida(self, parent):
         f = ttk.LabelFrame(parent, text=" Carpeta de Salida ", padding=8)
         f.pack(fill='x', pady=(0, 10))
+        self._output_frame = f
         r = ttk.Frame(f)
         r.pack(fill='x')
         ttk.Entry(r, textvariable=self.output_var) \
@@ -1401,8 +1463,10 @@ class FirmadorApp:
         if p:
             self.pdf_var.set(p)
             if not self.output_var.get():
+                suffix = ('_separados' if self.mode_var.get() == 'separate'
+                          else '_firmados')
                 self.output_var.set(
-                    str(Path(p).parent / f"{Path(p).stem}_firmados"))
+                    str(Path(p).parent / f"{Path(p).stem}{suffix}"))
             self._reset_zone()
 
     def _sel_cert_file(self):
@@ -1437,6 +1501,7 @@ class FirmadorApp:
     def _toggle_mode(self):
         self._page_full_text = None
         mode = self.mode_var.get()
+        is_separate = mode == 'separate'
 
         self._pdf_row.pack_forget()
         self._pages_row.pack_forget()
@@ -1445,19 +1510,34 @@ class FirmadorApp:
             self._name_check_frame.pack_forget()
             self._name_controls.pack_forget()
 
-        if mode in ('single', 'split'):
+        if mode in ('single', 'split', 'separate'):
             self._pdf_row.pack(fill='x')
-            if mode == 'split':
+            if mode in ('split', 'separate'):
                 self._pages_row.pack(fill='x', pady=(5, 0))
         else:
             self._folder_frame.pack(fill='x')
 
-        if mode in ('split', 'folder') and HAS_FITZ:
+        if mode in ('split', 'folder', 'separate') and HAS_FITZ:
             self._name_check_frame.pack(fill='x', pady=(5, 0))
             if self._use_text_name.get():
                 self._name_controls.pack(fill='x')
         elif HAS_FITZ:
             self._use_text_name.set(False)
+
+        if is_separate:
+            self._cert_frame.pack_forget()
+            self._sello_frame.pack_forget()
+            self.btn.configure(text="\u2702  Separar Documentos")
+        else:
+            if not self._cert_frame.winfo_ismapped():
+                self._cert_frame.pack(fill='x', pady=(0, 6),
+                                      before=self._sello_frame
+                                      if self._sello_frame.winfo_ismapped()
+                                      else self._output_frame)
+            if not self._sello_frame.winfo_ismapped():
+                self._sello_frame.pack(fill='x', pady=(0, 6),
+                                       before=self._output_frame)
+            self.btn.configure(text="\u270d  Firmar Documentos")
 
     def _sel_folder(self):
         p = filedialog.askdirectory(title="Seleccionar carpeta con PDFs")
@@ -1538,7 +1618,7 @@ class FirmadorApp:
             return
         self._page_full_text = None
         mp = (self._pages_per_doc.get()
-              if self.mode_var.get() == 'split' else None)
+              if self.mode_var.get() in ('split', 'separate') else None)
         try:
             dlg = ZoneSelectorDialog(self.root, pdf, max_pages=mp)
             if dlg.result:
@@ -1621,7 +1701,7 @@ class FirmadorApp:
 
     def _validate(self):
         mode = self.mode_var.get()
-        if mode in ('single', 'split'):
+        if mode in ('single', 'split', 'separate'):
             if not self.pdf_var.get():
                 messagebox.showwarning(
                     "Atención", "Seleccione un archivo PDF.")
@@ -1640,33 +1720,38 @@ class FirmadorApp:
                     "Error", "La carpeta seleccionada no existe.")
                 return False
 
-        if self.cert_mode.get() == 'file':
-            if not self.cert_var.get():
-                messagebox.showwarning(
-                    "Atención", "Seleccione un certificado (.pfx/.p12).")
-                return False
-            if not os.path.isfile(self.cert_var.get()):
-                messagebox.showerror(
-                    "Error", "El archivo de certificado no existe.")
-                return False
-        else:
-            if not self._win_session or not self._win_session.cert_der:
+        if mode != 'separate':
+            if self.cert_mode.get() == 'file':
+                if not self.cert_var.get():
+                    messagebox.showwarning(
+                        "Atención",
+                        "Seleccione un certificado (.pfx/.p12).")
+                    return False
+                if not os.path.isfile(self.cert_var.get()):
+                    messagebox.showerror(
+                        "Error",
+                        "El archivo de certificado no existe.")
+                    return False
+            else:
+                if not self._win_session or not self._win_session.cert_der:
+                    messagebox.showwarning(
+                        "Atención",
+                        "Seleccione un certificado del almacén"
+                        " de Windows.")
+                    return False
+
+            if (self.posicion_var.get() == 'zona'
+                    and not self._stamp_rect):
                 messagebox.showwarning(
                     "Atención",
-                    "Seleccione un certificado del almacén de Windows.")
+                    "Seleccione la zona donde colocar el sello de firma.")
                 return False
 
-        if (self.posicion_var.get() == 'zona'
-                and not self._stamp_rect):
-            messagebox.showwarning(
-                "Atención",
-                "Seleccione la zona donde colocar el sello de firma.")
-            return False
+            if not self.firmante_var.get().strip():
+                messagebox.showwarning(
+                    "Atención", "Introduzca el nombre del firmante.")
+                return False
 
-        if not self.firmante_var.get().strip():
-            messagebox.showwarning(
-                "Atención", "Introduzca el nombre del firmante.")
-            return False
         if not self.output_var.get():
             messagebox.showwarning(
                 "Atención", "Seleccione una carpeta de salida.")
@@ -1691,6 +1776,33 @@ class FirmadorApp:
         try:
             out_dir = self.output_var.get()
             os.makedirs(out_dir, exist_ok=True)
+            mode = self.mode_var.get()
+
+            use_text = self._use_text_name.get()
+            text_rect = self._text_rect if use_text else None
+            text_patron = (self._patron_var.get().strip()
+                           if use_text else None)
+            nombre_plantilla = (self._plantilla_var.get().strip()
+                                if use_text else None)
+
+            if mode == 'separate':
+                archivos = separar_pdf(
+                    self.pdf_var.get(), out_dir,
+                    text_rect=text_rect,
+                    text_patron=text_patron,
+                    nombre_plantilla=nombre_plantilla,
+                    pages_per_doc=self._pages_per_doc.get(),
+                    callback=self._prog,
+                )
+                total = len(archivos)
+                self._prog(1, 1,
+                           f"Completado: {total} documentos separados")
+                self.root.after(0, lambda: messagebox.showinfo(
+                    "Completado",
+                    f"{total} documentos separados."
+                    f"\n\nCarpeta:\n{out_dir}",
+                ))
+                return
 
             self._prog(0, 1, "Cargando certificado digital\u2026")
             if self.cert_mode.get() == 'file':
@@ -1702,14 +1814,7 @@ class FirmadorApp:
             pdf_signer = _crear_pdf_signer(signer_obj)
             stamp_rect = (self._stamp_rect
                           if self.posicion_var.get() == 'zona' else None)
-            use_text = self._use_text_name.get()
-            text_rect = self._text_rect if use_text else None
-            text_patron = (self._patron_var.get().strip()
-                           if use_text else None)
-            nombre_plantilla = (self._plantilla_var.get().strip()
-                                if use_text else None)
 
-            mode = self.mode_var.get()
             common = dict(
                 firmante=self.firmante_var.get().strip(),
                 cargo=self.cargo_var.get().strip(),
@@ -1742,7 +1847,8 @@ class FirmadorApp:
             total = len(archivos)
             for i, fpath in enumerate(archivos):
                 self._prog(total + i + 1, total * 2,
-                           f"Firmando digitalmente {i + 1} de {total}\u2026")
+                           f"Firmando digitalmente {i + 1}"
+                           f" de {total}\u2026")
                 tmp = fpath + '.tmp'
                 firmar_pdf(fpath, tmp, pdf_signer)
                 os.replace(tmp, fpath)
@@ -1750,7 +1856,8 @@ class FirmadorApp:
             self._prog(1, 1, f"Completado: {total} documentos firmados")
             self.root.after(0, lambda: messagebox.showinfo(
                 "Completado",
-                f"{total} documentos firmados.\n\nCarpeta:\n{out_dir}",
+                f"{total} documentos firmados."
+                f"\n\nCarpeta:\n{out_dir}",
             ))
         except Exception as e:
             self._prog(0, 1, f"Error: {e}")
