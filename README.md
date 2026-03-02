@@ -7,7 +7,7 @@ Pensado para cualquier persona que necesite firmar documentos PDF de forma masiv
 ![Python](https://img.shields.io/badge/Python-3.9%2B-blue)
 ![Windows](https://img.shields.io/badge/Plataforma-Windows-0078D6)
 ![License](https://img.shields.io/badge/Licencia-MIT-green)
-![Version](https://img.shields.io/badge/Versión-1.3-orange)
+![Version](https://img.shields.io/badge/Versión-1.4-orange)
 
 ![Captura de FirmaPDF](screenshot.png)
 
@@ -27,6 +27,7 @@ Pensado para cualquier persona que necesite firmar documentos PDF de forma masiv
   - **Zona personalizada** — selección visual sobre la página, estilo Adobe, con texto en mayúsculas y **tamaño de fuente auto-ajustable** al área seleccionada (si la zona es pequeña, el texto se reduce automáticamente para no desbordarse)
 - **Nombre automático de archivos desde el PDF**:
   - **Seleccionar zona**: dibuja un rectángulo sobre la página y se extrae el texto de esa posición en cada página (útil para expedientes, DNIs, referencias, etc.)
+  - **OCR automático**: si el PDF es escaneado (imágenes), al seleccionar una zona se activa automáticamente el reconocimiento óptico de caracteres mediante la API OCR de Windows — sin instalar nada adicional (requiere Windows 10 o superior)
   - **Buscar en frase**: escribe una frase del tipo *"acreditamos que {NOMBRE} ha asistido al curso"* y el programa extrae automáticamente lo que haya en `{NOMBRE}` de cada página, sin necesidad de seleccionar zona
   - Ambos métodos son combinables y muestran una **vista previa** en tiempo real del nombre resultante
   - Plantilla de nombre de archivo configurable (ej: `Certificado_{nombre}.pdf`)
@@ -140,6 +141,7 @@ El ejecutable se generará en la carpeta `dist/FirmaPDF.exe`.
 | [reportlab](https://pypi.org/project/reportlab/) | Generar el sello visual como overlay |
 | [pyhanko](https://pypi.org/project/pyHanko/) | Firma digital PAdES con certificado PKCS#12 |
 | [PyMuPDF](https://pypi.org/project/PyMuPDF/) | Previsualización del PDF y extracción de texto por zona |
+| [winocr](https://pypi.org/project/winocr/) | OCR de imágenes mediante Windows.Media.Ocr (requiere Windows 10+) |
 
 ---
 

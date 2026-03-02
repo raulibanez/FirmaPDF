@@ -19,6 +19,7 @@ build/
 # PDFs de prueba y salida
 *_firmados/
 *.tmp
+sample/*/
 
 # IDE
 .vscode/

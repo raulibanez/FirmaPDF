@@ -1,5 +1,5 @@
 """
-FirmaPDF v1.1
+FirmaPDF v1.4
 Utilidad para separar, sellar y firmar digitalmente documentos PDF
 con certificado digital FNMT (.pfx/.p12 o almacén de Windows).
 
@@ -23,6 +23,27 @@ try:
     import fitz
     HAS_FITZ = True
 except ImportError:
+    pass
+
+HAS_OCR = False
+_OCR_LANG = 'es'
+try:
+    import winocr
+    import asyncio
+    from winrt.windows.media.ocr import OcrEngine
+    from winrt.windows.globalization import Language
+    HAS_OCR = True
+    import locale
+    _sys_lang = locale.getdefaultlocale()[0] or ''
+    _sys_tag = _sys_lang.replace('_', '-')
+    _short = _sys_tag.split('-')[0]
+    if OcrEngine.is_language_supported(Language(_sys_tag)):
+        _OCR_LANG = _sys_tag
+    elif OcrEngine.is_language_supported(Language(_short)):
+        _OCR_LANG = _short
+except ImportError:
+    pass
+except Exception:
     pass
 
 
@@ -511,6 +532,37 @@ def _aplicar_plantilla(plantilla, nombre_texto, nombre_original, pagina):
     return _sanitizar_nombre(r)
 
 
+def _ocr_from_pixmap(pixmap, lang=None):
+    """Run Windows OCR on a PyMuPDF Pixmap. Returns extracted text or ''."""
+    if not HAS_OCR:
+        return ''
+    if lang is None:
+        lang = _OCR_LANG
+    try:
+        if not pixmap.alpha:
+            pix = fitz.Pixmap(pixmap, 1)
+        else:
+            pix = pixmap
+        raw = bytes(pix.samples)
+        result = asyncio.run(
+            winocr.to_coroutine(
+                winocr.recognize_bytes(raw, pix.width, pix.height, lang)))
+        return result.text.strip() if result and result.text else ''
+    except Exception:
+        return ''
+
+
+def _extraer_texto_zona(page, rect, ocr_dpi=300):
+    """Extract text from a page region: embedded text first, OCR fallback."""
+    text = page.get_text("text", clip=rect).strip() if rect else page.get_text("text").strip()
+    if text:
+        return text
+    if not rect or not HAS_OCR:
+        return ''
+    pix = page.get_pixmap(clip=rect, dpi=ocr_dpi)
+    return _ocr_from_pixmap(pix)
+
+
 def _extraer_nombres_paginas(pdf_path, total_pages, text_rect=None,
                              patron=None):
     """Extract text from a region or full page for use as filename."""
@@ -523,8 +575,7 @@ def _extraer_nombres_paginas(pdf_path, total_pages, text_rect=None,
     nombres = []
     for i in range(total_pages):
         page = doc[i]
-        raw = (page.get_text("text", clip=rect).strip() if rect
-               else page.get_text("text").strip())
+        raw = _extraer_texto_zona(page, rect)
         if patron:
             raw = _aplicar_patron(raw, patron)
         clean = _sanitizar_nombre(raw)
@@ -688,13 +739,14 @@ class ZoneSelectorDialog:
         if not self._pdf_rect:
             return
         rect = fitz.Rect(*self._pdf_rect)
-        text = self._doc[self._cur_page].get_text(
-            "text", clip=rect).strip()
+        page = self._doc[self._cur_page]
+        text = _extraer_texto_zona(page, rect)
         if text:
             self._text_var.set(
                 f"P\u00e1g. {self._cur_page + 1}: {text}")
         else:
-            self._text_var.set("(sin texto en la zona seleccionada)")
+            self._text_var.set(
+                "(no se detect\u00f3 texto en la zona seleccionada)")
 
     def _accept(self):
         self.result = self._pdf_rect
@@ -1624,14 +1676,15 @@ class FirmadorApp:
             if dlg.result:
                 self._text_rect = dlg.result
                 doc = fitz.open(pdf)
-                raw = doc[dlg.result_page].get_text(
-                    "text", clip=fitz.Rect(*dlg.result)).strip()
+                page = doc[dlg.result_page]
+                rect = fitz.Rect(*dlg.result)
+                raw = _extraer_texto_zona(page, rect)
                 doc.close()
                 self._zone_raw_text = raw
                 preview = raw[:60] + ('\u2026' if len(raw) > 60 else '')
                 self._zone_text_var.set(
                     f"\u2192 \"{preview}\"" if raw
-                    else "(sin texto en la zona)")
+                    else "(no se detect\u00f3 texto en la zona)")
                 self._update_nombre_preview()
         except Exception as e:
             messagebox.showerror(
