@@ -1,13 +1,13 @@
 # FirmaPDF
 
-Utilidad de escritorio para **separar, sellar y firmar digitalmente documentos PDF** con certificado de la FNMT (u otro certificado PKCS#12).
+Utilidad de escritorio para **separar, sellar y firmar documentos PDF** con certificado digital, firma manuscrita o imagen de firma.
 
-Pensado para cualquier persona que necesite firmar documentos PDF de forma masiva con su certificado digital: certificados de asistencia, actas, diplomas, expedientes, etc.
+Pensado para cualquier persona que necesite firmar documentos PDF de forma masiva: certificados de asistencia, actas, diplomas, expedientes, etc.
 
 ![Python](https://img.shields.io/badge/Python-3.9%2B-blue)
 ![Windows](https://img.shields.io/badge/Plataforma-Windows-0078D6)
 ![License](https://img.shields.io/badge/Licencia-MIT-green)
-![Version](https://img.shields.io/badge/Versión-1.4-orange)
+![Version](https://img.shields.io/badge/Versión-1.5-orange)
 
 ![Captura de FirmaPDF](screenshot.png)
 
@@ -20,11 +20,15 @@ Pensado para cualquier persona que necesite firmar documentos PDF de forma masiv
   - **Separar y firmar** — divide un PDF en documentos individuales (configurable: cada 1, 2, 3… páginas), sella y firma cada uno
   - **Firmar carpeta** — sella y firma todos los PDFs de una carpeta de una vez
   - **Solo separar** — divide un PDF en documentos individuales sin sellar ni firmar (útil para preparar documentos antes de firmarlos)
-- Añade un **sello visible** configurable: nombre del firmante, cargo, organización y fecha/hora
+- **Tres tipos de firma**:
+  - **Digital (certificado)** — firma criptográfica con certificado FNMT u otro PKCS#12, con sello visible configurable
+  - **Manuscrita** — dibuja tu firma a mano con el ratón directamente en la aplicación; trazo suavizado con interpolación Catmull-Rom y antialiasing por supersampling
+  - **Imagen (PNG)** — coloca una imagen de tu firma (PNG, JPG, BMP) en la posición que elijas del documento
+- **Sello visible** configurable (solo firma digital): nombre del firmante, cargo, organización y fecha/hora
 - Tres posiciones del sello:
   - **Inferior** — franja en la parte baja de cada página
   - **Lateral izquierdo** — franja vertical en el margen izquierdo
-  - **Zona personalizada** — selección visual sobre la página, estilo Adobe, con texto en mayúsculas y **tamaño de fuente auto-ajustable** al área seleccionada (si la zona es pequeña, el texto se reduce automáticamente para no desbordarse)
+  - **Zona personalizada** — selección visual sobre la página, estilo Adobe, con texto en mayúsculas y **tamaño de fuente auto-ajustable** al área seleccionada
 - **Nombre automático de archivos desde el PDF**:
   - **Seleccionar zona**: dibuja un rectángulo sobre la página y se extrae el texto de esa posición en cada página (útil para expedientes, DNIs, referencias, etc.)
   - **OCR automático**: si el PDF es escaneado (imágenes), al seleccionar una zona se activa automáticamente el reconocimiento óptico de caracteres mediante la API OCR de Windows — sin instalar nada adicional (requiere Windows 10 o superior)
@@ -112,24 +116,21 @@ El ejecutable se generará en la carpeta `dist/FirmaPDF.exe`.
 ## Uso
 
 1. **Elige el modo de trabajo**:
-   - **Firmar un PDF**: selecciona un PDF y se sellará y firmará sin cortarlo
+   - **Firmar un PDF**: selecciona un PDF y se firmará sin cortarlo
    - **Separar y firmar**: selecciona un PDF multipágina y elige cuántas páginas tendrá cada documento resultante
-   - **Firmar carpeta**: selecciona una carpeta y se sellarán y firmarán todos los PDFs que contenga
+   - **Firmar carpeta**: selecciona una carpeta y se firmarán todos los PDFs que contenga
    - **Solo separar**: divide un PDF en documentos sin sellar ni firmar
 2. *(Modos separar, carpeta y solo separar, opcional)* Marca **"Nombre de archivo desde el PDF"**:
    - Pulsa **"Seleccionar zona…"** para dibujar un área de donde extraer texto, o
    - Escribe una frase en **"Buscar en frase"** usando `{NOMBRE}` como comodín (ej: `acreditamos que {NOMBRE} ha asistido`)
    - Personaliza el **nombre de archivo** (ej: `Certificado_{nombre}`)
    - La vista previa te muestra al instante cómo quedará el nombre
-3. *(Solo modos de firma)* **Elige el certificado**:
-   - **Almacén de Windows** (recomendado): pulsa "Seleccionar..." y elige tu certificado FNMT del diálogo nativo de Windows
-   - **Archivo .pfx / .p12**: selecciona el archivo e introduce la contraseña
-4. *(Solo modos de firma)* **Rellena los datos del sello**: nombre del firmante, cargo y organización
-5. *(Solo modos de firma)* **Elige la posición del sello**:
-   - **Inferior** o **Lateral izquierdo** para posiciones predefinidas
-   - **Zona personalizada** para dibujar sobre la página exactamente dónde colocar el sello
-6. **Selecciona la carpeta de salida**
-7. Pulsa **"Firmar Documentos"** o **"Separar Documentos"** según el modo
+3. **Elige el tipo de firma**:
+   - **Digital (certificado)**: selecciona tu certificado del almacén de Windows o un archivo .pfx/.p12, rellena los datos del sello y elige su posición
+   - **Manuscrita**: pulsa "Dibujar firma…", firma con el ratón en el lienzo que aparece, y selecciona la zona del documento donde colocarla
+   - **Imagen (PNG)**: selecciona una imagen con tu firma y elige la zona del documento donde colocarla
+4. **Selecciona la carpeta de salida**
+5. Pulsa **"Firmar Documentos"** o **"Separar Documentos"** según el modo
 
 ---
 
@@ -138,10 +139,25 @@ El ejecutable se generará en la carpeta `dist/FirmaPDF.exe`.
 | Librería | Función |
 |----------|---------|
 | [pypdf](https://pypi.org/project/pypdf/) | Separar y manipular páginas PDF |
-| [reportlab](https://pypi.org/project/reportlab/) | Generar el sello visual como overlay |
+| [reportlab](https://pypi.org/project/reportlab/) | Generar el sello visual y overlay de firma como imagen |
 | [pyhanko](https://pypi.org/project/pyHanko/) | Firma digital PAdES con certificado PKCS#12 |
 | [PyMuPDF](https://pypi.org/project/PyMuPDF/) | Previsualización del PDF y extracción de texto por zona |
+| [Pillow](https://pypi.org/project/Pillow/) | Procesamiento de imágenes: firma manuscrita, previews, antialiasing |
 | [winocr](https://pypi.org/project/winocr/) | OCR de imágenes mediante Windows.Media.Ocr (requiere Windows 10+) |
+
+---
+
+## Novedades v1.5
+
+- **Firma manuscrita**: dibuja tu firma con el ratón directamente en la aplicación, con trazo suavizado (Catmull-Rom + supersampling LANCZOS) y posicionamiento libre sobre el documento
+- **Firma con imagen**: coloca un PNG/JPG con tu firma en cualquier zona del documento
+- Interfaz reorganizada con selector de tipo de firma (Digital / Manuscrita / Imagen) — los datos del sello solo aparecen en firma digital
+- Vista previa de la firma manuscrita/imagen en el panel principal
+
+## Novedades v1.4
+
+- **OCR automático**: detección de texto en PDFs escaneados mediante la API OCR de Windows (sin dependencias adicionales, requiere Windows 10+)
+- Detección automática del idioma del sistema para el OCR
 
 ---
 

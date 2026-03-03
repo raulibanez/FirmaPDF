@@ -1,5 +1,5 @@
 """
-FirmaPDF v1.4
+FirmaPDF v1.5
 Utilidad para separar, sellar y firmar digitalmente documentos PDF
 con certificado digital FNMT (.pfx/.p12 o almacén de Windows).
 
@@ -75,8 +75,10 @@ from pypdf import PdfReader, PdfWriter
 from reportlab.pdfgen import canvas
 from reportlab.lib.units import mm
 from reportlab.lib.colors import Color, HexColor
+from reportlab.lib.utils import ImageReader
 from pyhanko.sign import signers, fields
 from pyhanko.pdf_utils.incremental_writer import IncrementalPdfFileWriter
+from PIL import Image, ImageDraw, ImageFilter
 
 ACCENT = '#1a5276'
 BG_FILL = Color(0.96, 0.96, 0.96, alpha=0.9)
@@ -312,7 +314,7 @@ def _crear_sello(ancho, alto, lineas, posicion, stamp_rect=None):
             _sello_zona(c, ancho, alto, lineas, stamp_rect)
     elif posicion == 'inferior':
         _sello_inferior(c, ancho, alto, lineas)
-    else:
+    elif posicion == 'izquierda':
         _sello_izquierda(c, ancho, alto, lineas)
     c.save()
     buf.seek(0)
@@ -465,6 +467,30 @@ def _lineas_sello(firmante, cargo, centro):
         ls.append(centro)
     ls.append(f"Fecha: {datetime.now().strftime('%d/%m/%Y  %H:%M:%S')}")
     return ls
+
+
+# ── Signature image overlay ──────────────────────────────────────────────
+
+def _crear_firma_overlay(ancho, alto, firma_png_bytes, firma_rect):
+    """Overlay a signature image (PNG with transparency) on a PDF page."""
+    buf = io.BytesIO()
+    c = canvas.Canvas(buf, pagesize=(ancho, alto))
+    x0, y0_mu, x1, y1_mu = firma_rect
+    rx = x0
+    ry = alto - y1_mu
+    rw = x1 - x0
+    rh = y1_mu - y0_mu
+    if rw < 5 or rh < 5:
+        c.save()
+        buf.seek(0)
+        return buf
+    img_buf = io.BytesIO(firma_png_bytes)
+    c.drawImage(
+        ImageReader(img_buf), rx, ry, rw, rh,
+        preserveAspectRatio=True, anchor='c', mask='auto')
+    c.save()
+    buf.seek(0)
+    return buf
 
 
 # ── PDF processing ───────────────────────────────────────────────────────
@@ -923,11 +949,190 @@ class StampZoneSelectorDialog:
         self._dlg.destroy()
 
 
+class SignatureDrawDialog:
+    """Dialog to draw a freehand signature with smooth strokes."""
+
+    CANVAS_W = 520
+    CANVAS_H = 200
+    RENDER_SCALE = 12
+    DOWNSAMPLE = 3
+    SMOOTHING = 0.35
+    LINE_W = 0.5
+    EXPORT_RADIUS = 2.0
+
+    def __init__(self, parent):
+        self.result = None
+        self._strokes = []
+        self._current = []
+        self._smooth_x = 0.0
+        self._smooth_y = 0.0
+
+        self._dlg = tk.Toplevel(parent)
+        self._dlg.title("Dibujar firma")
+        self._dlg.resizable(False, False)
+        self._dlg.transient(parent)
+        self._dlg.grab_set()
+
+        frm = ttk.Frame(self._dlg, padding=10)
+        frm.pack(fill='both', expand=True)
+
+        ttk.Label(
+            frm, text="Dibuje su firma con el rat\u00f3n:",
+            font=('Segoe UI', 9),
+        ).pack(anchor='w', pady=(0, 5))
+
+        self._canvas = tk.Canvas(
+            frm, width=self.CANVAS_W, height=self.CANVAS_H,
+            bg='white', cursor='pencil', highlightthickness=1,
+            highlightbackground='#aaa')
+        self._canvas.pack()
+
+        self._canvas.bind('<ButtonPress-1>', self._on_press)
+        self._canvas.bind('<B1-Motion>', self._on_drag)
+        self._canvas.bind('<ButtonRelease-1>', self._on_release)
+
+        btn_frm = ttk.Frame(frm)
+        btn_frm.pack(fill='x', pady=(8, 0))
+        ttk.Button(btn_frm, text="Limpiar",
+                   command=self._clear).pack(side='left')
+        ttk.Button(btn_frm, text="Aceptar",
+                   command=self._accept).pack(side='right', padx=(5, 0))
+        ttk.Button(btn_frm, text="Cancelar",
+                   command=self._cancel).pack(side='right')
+
+        self._dlg.update_idletasks()
+        dw = self._dlg.winfo_width()
+        dh = self._dlg.winfo_height()
+        x = (self._dlg.winfo_screenwidth() - dw) // 2
+        y = (self._dlg.winfo_screenheight() - dh) // 2
+        self._dlg.geometry(f"+{x}+{y}")
+        self._dlg.wait_window()
+
+    def _on_press(self, event):
+        self._smooth_x = float(event.x)
+        self._smooth_y = float(event.y)
+        self._current = [(self._smooth_x, self._smooth_y)]
+
+    def _on_drag(self, event):
+        a = self.SMOOTHING
+        self._smooth_x = a * event.x + (1 - a) * self._smooth_x
+        self._smooth_y = a * event.y + (1 - a) * self._smooth_y
+        self._current.append((self._smooth_x, self._smooth_y))
+        if len(self._current) >= 2:
+            coords = []
+            for p in self._current:
+                coords.extend(p)
+            self._canvas.delete('current_stroke')
+            self._canvas.create_line(
+                *coords, fill='#0a0f32', width=self.LINE_W,
+                smooth=True, splinesteps=36,
+                capstyle='round', joinstyle='round',
+                tags='current_stroke')
+
+    def _on_release(self, event):
+        a = self.SMOOTHING
+        self._smooth_x = a * event.x + (1 - a) * self._smooth_x
+        self._smooth_y = a * event.y + (1 - a) * self._smooth_y
+        self._current.append((self._smooth_x, self._smooth_y))
+        if len(self._current) >= 2:
+            self._strokes.append(list(self._current))
+            self._canvas.delete('current_stroke')
+            coords = []
+            for p in self._current:
+                coords.extend(p)
+            self._canvas.create_line(
+                *coords, fill='#0a0f32', width=self.LINE_W,
+                smooth=True, splinesteps=36,
+                capstyle='round', joinstyle='round')
+        self._current = []
+
+    def _clear(self):
+        self._strokes.clear()
+        self._current.clear()
+        self._canvas.delete('all')
+
+    def _accept(self):
+        if not self._strokes:
+            return
+        self.result = self._export_png()
+        self._dlg.destroy()
+
+    def _cancel(self):
+        self.result = None
+        self._dlg.destroy()
+
+    @staticmethod
+    def _catmull_rom(points, steps=8):
+        """Interpolate points with Catmull-Rom spline for smooth curves."""
+        if len(points) < 2:
+            return list(points)
+        pts = [points[0]] + list(points) + [points[-1]]
+        result = []
+        for i in range(1, len(pts) - 2):
+            p0, p1, p2, p3 = pts[i - 1], pts[i], pts[i + 1], pts[i + 2]
+            for t_step in range(steps):
+                t = t_step / steps
+                t2 = t * t
+                t3 = t2 * t
+                x = 0.5 * (
+                    (2 * p1[0])
+                    + (-p0[0] + p2[0]) * t
+                    + (2 * p0[0] - 5 * p1[0] + 4 * p2[0] - p3[0]) * t2
+                    + (-p0[0] + 3 * p1[0] - 3 * p2[0] + p3[0]) * t3)
+                y = 0.5 * (
+                    (2 * p1[1])
+                    + (-p0[1] + p2[1]) * t
+                    + (2 * p0[1] - 5 * p1[1] + 4 * p2[1] - p3[1]) * t2
+                    + (-p0[1] + 3 * p1[1] - 3 * p2[1] + p3[1]) * t3)
+                result.append((x, y))
+        result.append(points[-1])
+        return result
+
+    def _export_png(self):
+        """Render at high res then downsample for perfect antialiasing."""
+        s = self.RENDER_SCALE
+        ds = self.DOWNSAMPLE
+        w = self.CANVAS_W * s
+        h = self.CANVAS_H * s
+        img = Image.new('RGBA', (w, h), (0, 0, 0, 0))
+        draw = ImageDraw.Draw(img)
+        r = self.EXPORT_RADIUS * ds
+        ink = (10, 15, 50, 240)
+        for stroke in self._strokes:
+            if len(stroke) < 2:
+                continue
+            scaled = [(x * s, y * s) for x, y in stroke]
+            smooth = self._catmull_rom(scaled, steps=16)
+            prev = None
+            for px, py in smooth:
+                if prev:
+                    dist = ((px - prev[0]) ** 2
+                            + (py - prev[1]) ** 2) ** 0.5
+                    if dist < r * 0.3:
+                        continue
+                draw.ellipse((px - r, py - r, px + r, py + r), fill=ink)
+                prev = (px, py)
+        bbox = img.getbbox()
+        if not bbox:
+            return b''
+        pad = int(r * 3)
+        bbox = (max(0, bbox[0] - pad), max(0, bbox[1] - pad),
+                min(w, bbox[2] + pad), min(h, bbox[3] + pad))
+        img = img.crop(bbox)
+        final_w = max(1, img.width // ds)
+        final_h = max(1, img.height // ds)
+        img = img.resize((final_w, final_h), Image.LANCZOS)
+        buf = io.BytesIO()
+        img.save(buf, format='PNG')
+        return buf.getvalue()
+
+
 def separar_y_sellar(pdf_path, output_dir, firmante, cargo, centro,
                      posicion, text_rect=None, stamp_rect=None,
                      stamp_page=0, text_patron=None,
                      nombre_plantilla=None, pages_per_doc=1,
-                     callback=None):
+                     firma_png_bytes=None, firma_rect=None,
+                     firma_page=0, callback=None):
     reader = PdfReader(pdf_path)
     if reader.is_encrypted:
         raise ValueError("El PDF está protegido. Desprotéjalo primero.")
@@ -937,7 +1142,8 @@ def separar_y_sellar(pdf_path, output_dir, firmante, cargo, centro,
 
     ppd = max(1, pages_per_doc)
     nombre = Path(pdf_path).stem
-    lineas = _lineas_sello(firmante, cargo, centro)
+    apply_stamp = posicion in ('inferior', 'izquierda', 'zona')
+    lineas = _lineas_sello(firmante, cargo, centro) if apply_stamp else []
 
     chunks = list(range(0, total, ppd))
     n_chunks = len(chunks)
@@ -975,14 +1181,19 @@ def separar_y_sellar(pdf_path, output_dir, firmante, cargo, centro,
             page = reader.pages[i]
             ancho, alto = _page_dims(page)
             page_in_chunk = i - start
-            if posicion == 'zona' and page_in_chunk != stamp_page:
-                pass
-            else:
-                sr = stamp_rect if posicion == 'zona' else None
-                overlay_buf = _crear_sello(
-                    ancho, alto, lineas, posicion, sr)
-                overlay_reader = PdfReader(overlay_buf)
-                page.merge_page(overlay_reader.pages[0])
+            if apply_stamp:
+                if posicion == 'zona' and page_in_chunk != stamp_page:
+                    pass
+                else:
+                    sr = stamp_rect if posicion == 'zona' else None
+                    overlay_buf = _crear_sello(
+                        ancho, alto, lineas, posicion, sr)
+                    overlay_reader = PdfReader(overlay_buf)
+                    page.merge_page(overlay_reader.pages[0])
+            if firma_png_bytes and firma_rect and page_in_chunk == firma_page:
+                fb = _crear_firma_overlay(ancho, alto,
+                                          firma_png_bytes, firma_rect)
+                page.merge_page(PdfReader(fb).pages[0])
             writer.add_page(page)
         out = os.path.join(output_dir, f"{nombres_finales[ci]}.pdf")
         with open(out, 'wb') as fout:
@@ -990,7 +1201,7 @@ def separar_y_sellar(pdf_path, output_dir, firmante, cargo, centro,
         archivos.append(out)
         if callback:
             callback(ci + 1, n_chunks,
-                     f"Separando y sellando documento {ci + 1}"
+                     f"Procesando documento {ci + 1}"
                      f" de {n_chunks}\u2026")
     return archivos
 
@@ -1054,7 +1265,9 @@ def separar_pdf(pdf_path, output_dir, text_rect=None, text_patron=None,
 
 
 def sellar_pdf(pdf_path, output_dir, firmante, cargo, centro,
-               posicion, stamp_rect=None, stamp_page=0, callback=None):
+               posicion, stamp_rect=None, stamp_page=0,
+               firma_png_bytes=None, firma_rect=None,
+               firma_page=0, callback=None):
     """Stamp a single PDF without splitting."""
     reader = PdfReader(pdf_path)
     if reader.is_encrypted:
@@ -1063,22 +1276,28 @@ def sellar_pdf(pdf_path, output_dir, firmante, cargo, centro,
     if total == 0:
         raise ValueError("El PDF no contiene páginas.")
 
-    lineas = _lineas_sello(firmante, cargo, centro)
+    apply_stamp = posicion in ('inferior', 'izquierda', 'zona')
+    lineas = _lineas_sello(firmante, cargo, centro) if apply_stamp else []
     writer = PdfWriter()
     for i, page in enumerate(reader.pages):
         ancho, alto = _page_dims(page)
-        if posicion == 'zona' and i != stamp_page:
-            pass
-        else:
-            sr = stamp_rect if posicion == 'zona' else None
-            overlay_buf = _crear_sello(
-                ancho, alto, lineas, posicion, sr)
-            overlay_reader = PdfReader(overlay_buf)
-            page.merge_page(overlay_reader.pages[0])
+        if apply_stamp:
+            if posicion == 'zona' and i != stamp_page:
+                pass
+            else:
+                sr = stamp_rect if posicion == 'zona' else None
+                overlay_buf = _crear_sello(
+                    ancho, alto, lineas, posicion, sr)
+                overlay_reader = PdfReader(overlay_buf)
+                page.merge_page(overlay_reader.pages[0])
+        if firma_png_bytes and firma_rect and i == firma_page:
+            fb = _crear_firma_overlay(ancho, alto,
+                                      firma_png_bytes, firma_rect)
+            page.merge_page(PdfReader(fb).pages[0])
         writer.add_page(page)
         if callback:
             callback(i + 1, total,
-                     f"Sellando p\u00e1gina {i + 1} de {total}\u2026")
+                     f"Procesando p\u00e1gina {i + 1} de {total}\u2026")
 
     nombre = Path(pdf_path).stem
     out = os.path.join(output_dir, f"{nombre}.pdf")
@@ -1090,7 +1309,9 @@ def sellar_pdf(pdf_path, output_dir, firmante, cargo, centro,
 def sellar_carpeta(folder_path, output_dir, firmante, cargo, centro,
                    posicion, stamp_rect=None, stamp_page=0,
                    text_rect=None, text_patron=None,
-                   nombre_plantilla=None, callback=None):
+                   nombre_plantilla=None,
+                   firma_png_bytes=None, firma_rect=None,
+                   firma_page=0, callback=None):
     """Stamp all PDFs in a folder without splitting pages."""
     pdfs = sorted(
         f for f in os.listdir(folder_path)
@@ -1099,7 +1320,8 @@ def sellar_carpeta(folder_path, output_dir, firmante, cargo, centro,
         raise ValueError("No se encontraron archivos PDF en la carpeta.")
 
     use_names = text_rect or text_patron
-    lineas = _lineas_sello(firmante, cargo, centro)
+    apply_stamp = posicion in ('inferior', 'izquierda', 'zona')
+    lineas = _lineas_sello(firmante, cargo, centro) if apply_stamp else []
     total = len(pdfs)
     used = set()
     archivos = []
@@ -1111,14 +1333,19 @@ def sellar_carpeta(folder_path, output_dir, firmante, cargo, centro,
         writer = PdfWriter()
         for pi, page in enumerate(reader.pages):
             ancho, alto = _page_dims(page)
-            if posicion == 'zona' and pi != stamp_page:
-                pass
-            else:
-                sr = stamp_rect if posicion == 'zona' else None
-                overlay_buf = _crear_sello(
-                    ancho, alto, lineas, posicion, sr)
-                overlay_reader = PdfReader(overlay_buf)
-                page.merge_page(overlay_reader.pages[0])
+            if apply_stamp:
+                if posicion == 'zona' and pi != stamp_page:
+                    pass
+                else:
+                    sr = stamp_rect if posicion == 'zona' else None
+                    overlay_buf = _crear_sello(
+                        ancho, alto, lineas, posicion, sr)
+                    overlay_reader = PdfReader(overlay_buf)
+                    page.merge_page(overlay_reader.pages[0])
+            if firma_png_bytes and firma_rect and pi == firma_page:
+                fb = _crear_firma_overlay(ancho, alto,
+                                          firma_png_bytes, firma_rect)
+                page.merge_page(PdfReader(fb).pages[0])
             writer.add_page(page)
 
         out_name = Path(fname).stem
@@ -1225,6 +1452,14 @@ class FirmadorApp:
         self._stamp_page = 0
         self._stamp_zone_text_var = tk.StringVar(value="")
 
+        self._firma_tipo_var = tk.StringVar(value='digital')
+        self._firma_img_path = tk.StringVar(value='')
+        self._firma_draw_png = None
+        self._firma_zone_rect = None
+        self._firma_zone_page = 0
+        self._firma_zone_text_var = tk.StringVar(value='')
+        self._firma_preview_photo = None
+
         self._build_ui()
 
     def _center(self):
@@ -1270,7 +1505,7 @@ class FirmadorApp:
         ).pack(anchor='w', pady=(0, 10))
 
         self._section_pdf(m)
-        self._section_cert(m)
+        self._section_firma(m)
         self._section_sello(m)
         self._section_salida(m)
 
@@ -1394,17 +1629,29 @@ class FirmadorApp:
             self._plantilla_var.trace_add(
                 'write', self._update_nombre_preview)
 
-    def _section_cert(self, parent):
-        f = ttk.LabelFrame(
-            parent, text=" Certificado Digital ", padding=8)
+    def _section_firma(self, parent):
+        f = ttk.LabelFrame(parent, text=" Firma ", padding=8)
         f.pack(fill='x', pady=(0, 6))
-        self._cert_frame = f
+        self._firma_frame = f
+
+        tipo_row = ttk.Frame(f)
+        tipo_row.pack(fill='x', pady=(0, 6))
+        for txt, val in [("Digital (certificado)", 'digital'),
+                         ("Manuscrita", 'manuscrita'),
+                         ("Imagen (PNG)", 'imagen')]:
+            ttk.Radiobutton(
+                tipo_row, text=txt, variable=self._firma_tipo_var,
+                value=val, command=self._toggle_firma_tipo,
+            ).pack(side='left', padx=(0, 10))
+
+        # ── Digital: certificate sub-panel ──
+        self._panel_digital = ttk.Frame(f)
 
         if HAS_WIN_CERT_STORE:
-            mode_row = ttk.Frame(f)
+            mode_row = ttk.Frame(self._panel_digital)
             mode_row.pack(fill='x', pady=(0, 6))
             ttk.Radiobutton(
-                mode_row, text="Almacén de Windows",
+                mode_row, text="Almac\u00e9n de Windows",
                 variable=self.cert_mode, value='store',
                 command=self._toggle_cert,
             ).pack(side='left', padx=(0, 12))
@@ -1414,8 +1661,7 @@ class FirmadorApp:
                 command=self._toggle_cert,
             ).pack(side='left')
 
-        # Store mode frame
-        self._frame_store = ttk.Frame(f)
+        self._frame_store = ttk.Frame(self._panel_digital)
         rs = ttk.Frame(self._frame_store)
         rs.pack(fill='x')
         ttk.Label(rs, textvariable=self._win_cert_label_var,
@@ -1424,8 +1670,7 @@ class FirmadorApp:
         ttk.Button(rs, text="Seleccionar\u2026",
                    command=self._sel_win_cert).pack(side='right')
 
-        # File mode frame
-        self._frame_file = ttk.Frame(f)
+        self._frame_file = ttk.Frame(self._panel_digital)
         rf = ttk.Frame(self._frame_file)
         rf.pack(fill='x')
         ttk.Entry(rf, textvariable=self.cert_var) \
@@ -1434,11 +1679,72 @@ class FirmadorApp:
             .pack(side='right')
         rf2 = ttk.Frame(self._frame_file)
         rf2.pack(fill='x', pady=(5, 0))
-        ttk.Label(rf2, text="Contraseña:").pack(side='left')
+        ttk.Label(rf2, text="Contrase\u00f1a:").pack(side='left')
         ttk.Entry(rf2, textvariable=self.pass_var, show='\u2022', width=28) \
             .pack(side='left', padx=5)
 
-        self._toggle_cert()
+        # ── Manuscrita: draw sub-panel ──
+        self._panel_manuscrita = ttk.Frame(f)
+        rm_left = ttk.Frame(self._panel_manuscrita)
+        rm_left.pack(side='left', fill='y')
+        rm = ttk.Frame(rm_left)
+        rm.pack(fill='x')
+        ttk.Button(rm, text="Dibujar firma\u2026",
+                   command=self._draw_signature).pack(side='left')
+        self._draw_status_var = tk.StringVar(value="")
+        ttk.Label(rm, textvariable=self._draw_status_var,
+                  foreground='#444', font=('Segoe UI', 8)) \
+            .pack(side='left', padx=(8, 0))
+        rm2 = ttk.Frame(rm_left)
+        rm2.pack(fill='x', pady=(5, 0))
+        ttk.Button(rm2, text="Seleccionar zona\u2026",
+                   command=self._sel_firma_zone).pack(side='left')
+        ttk.Label(rm2, textvariable=self._firma_zone_text_var,
+                  foreground='#444', font=('Segoe UI', 8)) \
+            .pack(side='left', padx=(8, 0))
+        self._draw_preview_label = ttk.Label(self._panel_manuscrita)
+
+        # ── Imagen: PNG picker sub-panel ──
+        self._panel_imagen = ttk.Frame(f)
+        ri_left = ttk.Frame(self._panel_imagen)
+        ri_left.pack(side='left', fill='both', expand=True)
+        ri = ttk.Frame(ri_left)
+        ri.pack(fill='x')
+        ttk.Entry(ri, textvariable=self._firma_img_path) \
+            .pack(side='left', fill='x', expand=True, padx=(0, 5))
+        ttk.Button(ri, text="Examinar\u2026",
+                   command=self._sel_firma_img).pack(side='right')
+        ri2 = ttk.Frame(ri_left)
+        ri2.pack(fill='x', pady=(5, 0))
+        ttk.Button(ri2, text="Seleccionar zona\u2026",
+                   command=self._sel_firma_zone).pack(side='left')
+        ttk.Label(ri2, textvariable=self._firma_zone_text_var,
+                  foreground='#444', font=('Segoe UI', 8)) \
+            .pack(side='left', padx=(8, 0))
+        self._img_preview_label = ttk.Label(self._panel_imagen)
+
+        self._toggle_firma_tipo()
+
+    def _toggle_firma_tipo(self):
+        self._panel_digital.pack_forget()
+        self._panel_manuscrita.pack_forget()
+        self._panel_imagen.pack_forget()
+        tipo = self._firma_tipo_var.get()
+        if tipo == 'digital':
+            self._panel_digital.pack(fill='x')
+            self._toggle_cert()
+            if hasattr(self, '_sello_frame'):
+                if not self._sello_frame.winfo_ismapped():
+                    self._sello_frame.pack(fill='x', pady=(0, 6),
+                                           before=self._output_frame)
+        elif tipo == 'manuscrita':
+            self._panel_manuscrita.pack(fill='x')
+            if hasattr(self, '_sello_frame'):
+                self._sello_frame.pack_forget()
+        elif tipo == 'imagen':
+            self._panel_imagen.pack(fill='x')
+            if hasattr(self, '_sello_frame'):
+                self._sello_frame.pack_forget()
 
     def _toggle_cert(self):
         if self.cert_mode.get() == 'store' and HAS_WIN_CERT_STORE:
@@ -1550,6 +1856,79 @@ class FirmadorApp:
         if p:
             self.output_var.set(p)
 
+    def _draw_signature(self):
+        dlg = SignatureDrawDialog(self.root)
+        if dlg.result:
+            self._firma_draw_png = dlg.result
+            self._draw_status_var.set("\u2714 Firma dibujada")
+            try:
+                img = Image.open(io.BytesIO(dlg.result))
+                img.thumbnail((360, 100), Image.LANCZOS)
+                self._firma_preview_photo = tk.PhotoImage(
+                    data=self._pil_to_ppm(img))
+                self._draw_preview_label.configure(
+                    image=self._firma_preview_photo, anchor='center')
+                self._draw_preview_label.pack(
+                    side='right', fill='both', expand=True, padx=(12, 0))
+            except Exception:
+                pass
+
+    def _sel_firma_img(self):
+        p = filedialog.askopenfilename(
+            title="Seleccionar imagen de firma",
+            filetypes=[("Im\u00e1genes", "*.png *.jpg *.jpeg *.bmp"),
+                       ("Todos", "*.*")])
+        if p:
+            self._firma_img_path.set(p)
+            try:
+                img = Image.open(p).convert('RGBA')
+                img.thumbnail((360, 100), Image.LANCZOS)
+                self._firma_preview_photo = tk.PhotoImage(
+                    data=self._pil_to_ppm(img))
+                self._img_preview_label.configure(
+                    image=self._firma_preview_photo, anchor='center')
+                self._img_preview_label.pack(
+                    side='right', fill='both', expand=True, padx=(12, 0))
+            except Exception:
+                pass
+
+    def _sel_firma_zone(self):
+        pdf = self._get_reference_pdf()
+        if not pdf:
+            messagebox.showwarning(
+                "Atenci\u00f3n",
+                "Seleccione primero un archivo PDF o una carpeta.")
+            return
+        try:
+            mp = (self._pages_per_doc.get()
+                  if self.mode_var.get() in ('split', 'separate')
+                  else None)
+            dlg = StampZoneSelectorDialog(self.root, pdf, max_pages=mp)
+            if dlg.result:
+                self._firma_zone_rect = dlg.result
+                self._firma_zone_page = dlg.result_page
+                w_mm = (dlg.result[2] - dlg.result[0]) * 25.4 / 72
+                h_mm = (dlg.result[3] - dlg.result[1]) * 25.4 / 72
+                pg = dlg.result_page + 1
+                self._firma_zone_text_var.set(
+                    f"Zona: {w_mm:.0f} x {h_mm:.0f} mm"
+                    f" \u2014 p\u00e1gina {pg}")
+        except Exception as e:
+            messagebox.showerror(
+                "Error", f"No se pudo abrir el PDF:\n{e}")
+
+    @staticmethod
+    def _pil_to_ppm(img):
+        """Convert a PIL RGBA image to PPM bytes for tk.PhotoImage."""
+        bg = Image.new('RGB', img.size, (255, 255, 255))
+        if img.mode == 'RGBA':
+            bg.paste(img, mask=img.split()[3])
+        else:
+            bg.paste(img)
+        buf = io.BytesIO()
+        bg.save(buf, format='PPM')
+        return buf.getvalue()
+
     def _toggle_mode(self):
         self._page_full_text = None
         mode = self.mode_var.get()
@@ -1577,15 +1956,15 @@ class FirmadorApp:
             self._use_text_name.set(False)
 
         if is_separate:
-            self._cert_frame.pack_forget()
+            self._firma_frame.pack_forget()
             self._sello_frame.pack_forget()
             self.btn.configure(text="\u2702  Separar Documentos")
         else:
-            if not self._cert_frame.winfo_ismapped():
-                self._cert_frame.pack(fill='x', pady=(0, 6),
-                                      before=self._sello_frame
-                                      if self._sello_frame.winfo_ismapped()
-                                      else self._output_frame)
+            if not self._firma_frame.winfo_ismapped():
+                self._firma_frame.pack(fill='x', pady=(0, 6),
+                                       before=self._sello_frame
+                                       if self._sello_frame.winfo_ismapped()
+                                       else self._output_frame)
             if not self._sello_frame.winfo_ismapped():
                 self._sello_frame.pack(fill='x', pady=(0, 6),
                                        before=self._output_frame)
@@ -1757,7 +2136,7 @@ class FirmadorApp:
         if mode in ('single', 'split', 'separate'):
             if not self.pdf_var.get():
                 messagebox.showwarning(
-                    "Atención", "Seleccione un archivo PDF.")
+                    "Atenci\u00f3n", "Seleccione un archivo PDF.")
                 return False
             if not os.path.isfile(self.pdf_var.get()):
                 messagebox.showerror(
@@ -1766,7 +2145,8 @@ class FirmadorApp:
         else:
             if not self.folder_var.get():
                 messagebox.showwarning(
-                    "Atención", "Seleccione una carpeta con archivos PDF.")
+                    "Atenci\u00f3n",
+                    "Seleccione una carpeta con archivos PDF.")
                 return False
             if not os.path.isdir(self.folder_var.get()):
                 messagebox.showerror(
@@ -1774,40 +2154,76 @@ class FirmadorApp:
                 return False
 
         if mode != 'separate':
-            if self.cert_mode.get() == 'file':
-                if not self.cert_var.get():
+            firma_tipo = self._firma_tipo_var.get()
+
+            if firma_tipo == 'digital':
+                if self.cert_mode.get() == 'file':
+                    if not self.cert_var.get():
+                        messagebox.showwarning(
+                            "Atenci\u00f3n",
+                            "Seleccione un certificado (.pfx/.p12).")
+                        return False
+                    if not os.path.isfile(self.cert_var.get()):
+                        messagebox.showerror(
+                            "Error",
+                            "El archivo de certificado no existe.")
+                        return False
+                else:
+                    if (not self._win_session
+                            or not self._win_session.cert_der):
+                        messagebox.showwarning(
+                            "Atenci\u00f3n",
+                            "Seleccione un certificado del almac\u00e9n"
+                            " de Windows.")
+                        return False
+
+            elif firma_tipo == 'manuscrita':
+                if not self._firma_draw_png:
                     messagebox.showwarning(
-                        "Atención",
-                        "Seleccione un certificado (.pfx/.p12).")
+                        "Atenci\u00f3n",
+                        "Dibuje su firma antes de continuar.")
                     return False
-                if not os.path.isfile(self.cert_var.get()):
+                if not self._firma_zone_rect:
+                    messagebox.showwarning(
+                        "Atenci\u00f3n",
+                        "Seleccione la zona donde colocar la firma.")
+                    return False
+
+            elif firma_tipo == 'imagen':
+                img_path = self._firma_img_path.get()
+                if not img_path:
+                    messagebox.showwarning(
+                        "Atenci\u00f3n",
+                        "Seleccione una imagen de firma.")
+                    return False
+                if not os.path.isfile(img_path):
                     messagebox.showerror(
                         "Error",
-                        "El archivo de certificado no existe.")
+                        "El archivo de imagen no existe.")
                     return False
-            else:
-                if not self._win_session or not self._win_session.cert_der:
+                if not self._firma_zone_rect:
                     messagebox.showwarning(
-                        "Atención",
-                        "Seleccione un certificado del almacén"
-                        " de Windows.")
+                        "Atenci\u00f3n",
+                        "Seleccione la zona donde colocar la firma.")
                     return False
 
-            if (self.posicion_var.get() == 'zona'
-                    and not self._stamp_rect):
-                messagebox.showwarning(
-                    "Atención",
-                    "Seleccione la zona donde colocar el sello de firma.")
-                return False
+            if firma_tipo == 'digital':
+                if (self.posicion_var.get() == 'zona'
+                        and not self._stamp_rect):
+                    messagebox.showwarning(
+                        "Atenci\u00f3n",
+                        "Seleccione la zona donde colocar el sello.")
+                    return False
 
-            if not self.firmante_var.get().strip():
-                messagebox.showwarning(
-                    "Atención", "Introduzca el nombre del firmante.")
-                return False
+                if not self.firmante_var.get().strip():
+                    messagebox.showwarning(
+                        "Atenci\u00f3n",
+                        "Introduzca el nombre del firmante.")
+                    return False
 
         if not self.output_var.get():
             messagebox.showwarning(
-                "Atención", "Seleccione una carpeta de salida.")
+                "Atenci\u00f3n", "Seleccione una carpeta de salida.")
             return False
         return True
 
@@ -1824,6 +2240,20 @@ class FirmadorApp:
             self.progress['value'] = (cur / max(tot, 1)) * 100
             self.status_var.set(msg)
         self.root.after(0, _ui)
+
+    def _get_firma_png_bytes(self):
+        """Return PNG bytes for visual signature, or None."""
+        tipo = self._firma_tipo_var.get()
+        if tipo == 'manuscrita':
+            return self._firma_draw_png
+        if tipo == 'imagen':
+            img_path = self._firma_img_path.get()
+            if img_path and os.path.isfile(img_path):
+                img = Image.open(img_path).convert('RGBA')
+                buf = io.BytesIO()
+                img.save(buf, format='PNG')
+                return buf.getvalue()
+        return None
 
     def _process(self):
         try:
@@ -1857,26 +2287,55 @@ class FirmadorApp:
                 ))
                 return
 
-            self._prog(0, 1, "Cargando certificado digital\u2026")
-            if self.cert_mode.get() == 'file':
-                signer_obj = cargar_certificado_pfx(
-                    self.cert_var.get(), self.pass_var.get())
+            firma_tipo = self._firma_tipo_var.get()
+            firma_png = self._get_firma_png_bytes()
+            firma_rect = self._firma_zone_rect
+            firma_page = self._firma_zone_page
+            use_digital = firma_tipo == 'digital'
+
+            pdf_signer = None
+            if use_digital:
+                self._prog(0, 1, "Cargando certificado digital\u2026")
+                if self.cert_mode.get() == 'file':
+                    signer_obj = cargar_certificado_pfx(
+                        self.cert_var.get(), self.pass_var.get())
+                else:
+                    signer_obj = WindowsSigner(self._win_session)
+                pdf_signer = _crear_pdf_signer(signer_obj)
+
+            progress_mult = 2 if use_digital else 1
+
+            if use_digital:
+                stamp_rect = (self._stamp_rect
+                              if self.posicion_var.get() == 'zona'
+                              else None)
+                common = dict(
+                    firmante=self.firmante_var.get().strip(),
+                    cargo=self.cargo_var.get().strip(),
+                    centro=self.centro_var.get().strip(),
+                    posicion=self.posicion_var.get(),
+                    stamp_rect=stamp_rect,
+                    stamp_page=self._stamp_page,
+                    firma_png_bytes=None,
+                    firma_rect=None,
+                    firma_page=0,
+                    callback=lambda c, t, m: self._prog(
+                        c, t * progress_mult, m),
+                )
             else:
-                signer_obj = WindowsSigner(self._win_session)
-
-            pdf_signer = _crear_pdf_signer(signer_obj)
-            stamp_rect = (self._stamp_rect
-                          if self.posicion_var.get() == 'zona' else None)
-
-            common = dict(
-                firmante=self.firmante_var.get().strip(),
-                cargo=self.cargo_var.get().strip(),
-                centro=self.centro_var.get().strip(),
-                posicion=self.posicion_var.get(),
-                stamp_rect=stamp_rect,
-                stamp_page=self._stamp_page,
-                callback=lambda c, t, m: self._prog(c, t * 2, m),
-            )
+                common = dict(
+                    firmante='',
+                    cargo='',
+                    centro='',
+                    posicion='ninguno',
+                    stamp_rect=None,
+                    stamp_page=0,
+                    firma_png_bytes=firma_png,
+                    firma_rect=firma_rect,
+                    firma_page=firma_page,
+                    callback=lambda c, t, m: self._prog(
+                        c, t * progress_mult, m),
+                )
 
             if mode == 'single':
                 archivos = sellar_pdf(
@@ -1898,13 +2357,14 @@ class FirmadorApp:
                 )
 
             total = len(archivos)
-            for i, fpath in enumerate(archivos):
-                self._prog(total + i + 1, total * 2,
-                           f"Firmando digitalmente {i + 1}"
-                           f" de {total}\u2026")
-                tmp = fpath + '.tmp'
-                firmar_pdf(fpath, tmp, pdf_signer)
-                os.replace(tmp, fpath)
+            if use_digital:
+                for i, fpath in enumerate(archivos):
+                    self._prog(total + i + 1, total * 2,
+                               f"Firmando digitalmente {i + 1}"
+                               f" de {total}\u2026")
+                    tmp = fpath + '.tmp'
+                    firmar_pdf(fpath, tmp, pdf_signer)
+                    os.replace(tmp, fpath)
 
             self._prog(1, 1, f"Completado: {total} documentos firmados")
             self.root.after(0, lambda: messagebox.showinfo(
